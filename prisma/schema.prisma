@@ -1,0 +1,113 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  accounts      Account[]
+  sessions      Session[]
+  plans         LearningPlan[]
+  preferences   UserPreference?
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+/// Per-user time preferences, workload, calendar connected flag, effectiveness by slot (JSON)
+model UserPreference {
+  id        String @id @default(cuid())
+  userId    String @unique
+  /// JSON: { "weekday": { "0": { "start": "19:00", "end": "22:00" } }, ... }
+  timeWindows   String
+  maxMinutesDay Int   @default(90)
+  calendarConnected Boolean @default(false)
+  /// slot effectiveness: { "Mon-19:30": 4.2, ... }
+  slotEffectiveness  String  @default("{}")
+  /// cancellation counts per day-of-week
+  slotCancellations  String  @default("{}")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// One active plan per user in MVP; we use status
+model LearningPlan {
+  id            String   @id @default(cuid())
+  userId        String
+  title         String
+  /// goal, deadline, resources, raw LLM or fallback plan JSON
+  targetSkill   String
+  deadline      DateTime
+  startDate     DateTime
+  initialResources String @default("[]")
+  /// Full structured plan: phases, tasks
+  planJson      String
+  /// Scheduled sessions with calendar ids
+  scheduleJson  String   @default("[]")
+  /// supplemental resource suggestions
+  recommendations String @default("[]")
+  status        String   @default("active") // active, archived, paused
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  taskCompletions TaskCompletion[]
+
+  @@index([userId, status])
+}
+
+/// Stores completion, effectiveness rating, milestone status
+model TaskCompletion {
+  id         String   @id @default(cuid())
+  planId     String
+  taskId     String
+  completed  Boolean  @default(false)
+  /// 1-5 self-rated effectiveness
+  effectiveness Int?
+  completedAt   DateTime?
+
+  plan LearningPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, taskId])
+  @@index([planId])
+}
