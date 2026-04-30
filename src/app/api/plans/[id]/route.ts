@@ -1,6 +1,9 @@
 import { auth } from "@/auth";
 import { smoothUpdate, slotKeyFromIso } from "@/lib/effectiveness";
-import { applyNaturalLanguageEdit } from "@/lib/nl-schedule";
+import {
+  applyNaturalLanguageEditSmart,
+  type HfNlDiagnostic,
+} from "@/lib/nl-schedule";
 import { prisma } from "@/lib/db";
 import { ensureUserPreferences } from "@/lib/user";
 import { rescheduleUncompleted } from "@/lib/time-windows";
@@ -59,16 +62,27 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   }
 
   let outSchedule = plan.scheduleJson;
+  let nlMessage: string | undefined;
+  let nlHf: HfNlDiagnostic | undefined;
   if (p.data.scheduleJson) {
     outSchedule = p.data.scheduleJson;
   }
   if (p.data.naturalLanguage) {
     const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
-    const r = applyNaturalLanguageEdit(p.data.naturalLanguage, sessions, new Date());
-    if (!r.ok) {
-      return NextResponse.json({ error: r.error }, { status: 400 });
+    const smart = await applyNaturalLanguageEditSmart(
+      p.data.naturalLanguage,
+      sessions,
+      new Date()
+    );
+    nlHf = smart.hf;
+    if (!smart.result.ok) {
+      return NextResponse.json(
+        { error: smart.result.error, hf: nlHf },
+        { status: 400 }
+      );
     }
-    outSchedule = JSON.stringify(r.sessions);
+    outSchedule = JSON.stringify(smart.result.sessions);
+    nlMessage = smart.result.message;
   }
   if (p.data.rescheduleFrom) {
     const pref = await ensureUserPreferences(s.user.id);
@@ -132,5 +146,5 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     where: { id },
     data,
   });
-  return NextResponse.json({ plan: updated });
+  return NextResponse.json({ plan: updated, message: nlMessage, hf: nlHf });
 }

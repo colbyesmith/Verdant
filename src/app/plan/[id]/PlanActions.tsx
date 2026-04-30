@@ -3,6 +3,27 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+type HfDiag = {
+  configured: boolean;
+  called: boolean;
+  rewrite: string | null;
+  httpStatus?: number;
+};
+
+function formatHfNote(hf?: HfDiag): string {
+  if (!hf) return "";
+  if (!hf.configured) {
+    return " · NL edits need HF_API_TOKEN in .env.";
+  }
+  if (!hf.called) {
+    return "";
+  }
+  const st = hf.httpStatus != null ? `${hf.httpStatus}` : "?";
+  const rw =
+    hf.rewrite && hf.rewrite.trim().length > 0 ? `"${hf.rewrite.trim()}"` : "(no line parsed)";
+  return ` · HF called (${st}), rewrite ${rw}.`;
+}
+
 export function PlanActions({ planId }: { planId: string }) {
   const r = useRouter();
   const [text, setText] = useState("");
@@ -19,11 +40,16 @@ export function PlanActions({ planId }: { planId: string }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ naturalLanguage: text }),
     });
-    const j = (await res.json().catch(() => ({}))) as { error?: string; plan?: unknown };
+    const j = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      plan?: unknown;
+      message?: string;
+      hf?: HfDiag;
+    };
     if (!res.ok) {
-      setErr(j.error || "Could not apply edit");
+      setErr((j.error || "Could not apply edit") + formatHfNote(j.hf));
     } else {
-      setMessage("Updated.");
+      setMessage((j.message || "Updated.") + formatHfNote(j.hf));
       setText("");
       r.refresh();
     }
@@ -103,8 +129,9 @@ export function PlanActions({ planId }: { planId: string }) {
       </div>
       <h2 className="text-sm font-medium text-sprout-200/90">Edit with natural language</h2>
       <p className="text-xs text-[var(--muted)]">
-        Try: “make this week lighter”, “push to next week”, or “move tomorrow to Thursday
-        night” (MVP phrasing is limited; extend in <code>nl-schedule.ts</code>).
+        Requires HF_API_TOKEN. Describe any change in plain English — the model returns an
+        updated schedule (use Rebalance from today separately if you want Verdant to pack
+        tasks into time windows again).
       </p>
       <div className="flex flex-col gap-2 sm:flex-row">
         <input
