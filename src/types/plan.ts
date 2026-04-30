@@ -30,9 +30,21 @@ export type TimeWindows = Record<string, { start: string; end: string } | TimeWi
 
 export interface ScheduledSession {
   id: string;
+  /** First task in this block (for backwards compatibility). */
   planTaskId: string;
+  /**
+   * When several plan tasks share one daily meeting, listed here with minutes.
+   * Omitted for legacy single-task sessions.
+   */
+  agenda?: Array<{
+    planTaskId: string;
+    title: string;
+    type: TaskType;
+    minutes: number;
+  }>;
   start: string; // ISO
   end: string;
+  /** Event title: combined agenda titles when multiple tasks share the block. */
   title: string;
   type: TaskType;
   calendarEventId?: string;

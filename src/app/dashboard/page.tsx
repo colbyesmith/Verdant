@@ -6,6 +6,16 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { format, parseISO } from "date-fns";
 
+function formatSessionTimeRange(startIso: string, endIso: string): string {
+  const start = parseISO(startIso);
+  const end = parseISO(endIso);
+  const sameDay = start.toDateString() === end.toDateString();
+  if (sameDay) {
+    return `${format(start, "EEE, MMM d · h:mm a")} – ${format(end, "h:mm a")}`;
+  }
+  return `${format(start, "PPp")} – ${format(end, "PPp")}`;
+}
+
 export default async function DashboardPage() {
   const s = await auth();
   if (!s?.user?.id) {
@@ -73,7 +83,7 @@ export default async function DashboardPage() {
                 <div>
                   <p className="font-medium text-sprout-50">{row.title}</p>
                   <p className="text-xs text-[var(--muted)]">
-                    {format(parseISO(row.start), "PPp")} · {row.type}
+                    {formatSessionTimeRange(row.start, row.end)} · {row.type}
                   </p>
                 </div>
                 <span className="shrink-0 text-xs text-sprout-400/90">{row.type}</span>

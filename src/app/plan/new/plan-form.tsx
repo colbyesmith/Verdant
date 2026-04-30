@@ -71,9 +71,13 @@ export function NewPlanForm() {
       </label>
       <p className="text-xs text-[var(--muted)]">
         Workload and preferred times use your values from Settings (defaults if unset).
-        After submit, the plan and schedule are created; add{" "}
-        <code className="text-sprout-200/80">OPENAI_API_KEY</code> for AI-generated
-        structure (template fallback when missing).
+        After submit,         open your plan and use{" "}
+        <span className="font-medium text-sprout-200/90">
+          Add learning sessions to Google Calendar
+        </span>{" "}
+        to copy sessions into your primary Google calendar (sign in with Google). Add{" "}
+        <code className="text-sprout-200/80">OPENAI_API_KEY</code> for AI-generated structure
+        (template fallback when missing).
       </p>
       {error && <p className="text-sm text-rose-300/90">{error}</p>}
       <button

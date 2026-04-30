@@ -88,7 +88,11 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   if (p.data.taskFeedback) {
     const { taskId, completed, effectiveness } = p.data.taskFeedback;
     const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
-    const sess = sessions.find((x) => x.planTaskId === taskId);
+    const sess = sessions.find(
+      (x) =>
+        x.planTaskId === taskId ||
+        x.agenda?.some((a) => a.planTaskId === taskId)
+    );
     await prisma.taskCompletion.upsert({
       where: { planId_taskId: { planId: id, taskId } },
       create: {

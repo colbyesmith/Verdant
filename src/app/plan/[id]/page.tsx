@@ -66,19 +66,37 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
         <div>
           <h2 className="text-sm font-medium text-sprout-200/90">Scheduled sessions</h2>
           <ul className="mt-2 space-y-1">
-            {schedule.map((row) => (
-              <li key={row.id}>
-                <SessionRow
-                  planId={id}
-                  taskId={row.planTaskId}
-                  title={row.title}
-                  start={row.start}
-                  type={row.type}
-                  completed={done.has(row.planTaskId)}
-                  initialEffectiveness={effByTask[row.planTaskId] ?? null}
-                />
-              </li>
-            ))}
+            {schedule.map((row) => {
+              const lines =
+                row.agenda && row.agenda.length > 0
+                  ? row.agenda.map((a) => ({
+                      taskId: a.planTaskId,
+                      title: a.title,
+                      type: a.type,
+                      completed: done.has(a.planTaskId),
+                      initialEffectiveness: effByTask[a.planTaskId] ?? null,
+                    }))
+                  : [
+                      {
+                        taskId: row.planTaskId,
+                        title: row.title,
+                        type: row.type,
+                        completed: done.has(row.planTaskId),
+                        initialEffectiveness: effByTask[row.planTaskId] ?? null,
+                      },
+                    ];
+              return (
+                <li key={row.id}>
+                  <SessionRow
+                    planId={id}
+                    sessionTitle={row.title}
+                    start={row.start}
+                    lines={lines}
+                    onCalendar={Boolean(row.googleSynced)}
+                  />
+                </li>
+              );
+            })}
           </ul>
         </div>
         <PlanActions planId={id} />

@@ -30,6 +30,40 @@ export function PlanActions({ planId }: { planId: string }) {
     setBusy(false);
   }
 
+  async function addToCalendar() {
+    setBusy(true);
+    setErr(null);
+    setMessage(null);
+    const res = await fetch(`/api/plans/${planId}/calendar`, {
+      method: "POST",
+    });
+    const j = (await res.json().catch(() => ({}))) as {
+      syncedCount?: number;
+      pendingCount?: number;
+      errors?: string[];
+      error?: string;
+    };
+    if (!res.ok) {
+      setErr(j.error || "Calendar sync failed");
+    } else {
+      const n = j.syncedCount ?? 0;
+      const pend = j.pendingCount ?? 0;
+      if (n === 0 && (j.errors?.length ?? 0) > 0) {
+        setMessage(null);
+        setErr(j.errors!.slice(0, 5).join(" "));
+      } else {
+        const bits = [`Added ${n} session(s) to Google Calendar.`];
+        if (pend > 0) bits.push(`${pend} still pending.`);
+        setMessage(bits.join(" "));
+        setErr(
+          j.errors?.length ? j.errors.slice(0, 3).join(" · ") : null
+        );
+      }
+      r.refresh();
+    }
+    setBusy(false);
+  }
+
   async function resched() {
     setBusy(true);
     setErr(null);
@@ -51,6 +85,22 @@ export function PlanActions({ planId }: { planId: string }) {
 
   return (
     <div className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--card)]/40 p-4">
+      <div className="rounded-lg border border-sprout-500/20 bg-sprout-950/40 p-3">
+        <h2 className="text-sm font-medium text-sprout-200/90">Google Calendar</h2>
+        <p className="mt-1 text-xs text-[var(--muted)]">
+          Create one event per scheduled session in your primary Google calendar. Sign in with
+          Google (same account as Settings). Use after creating the sprout or if automatic sync
+          did not run.
+        </p>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={addToCalendar}
+          className="mt-3 w-full rounded-lg bg-sprout-600 px-4 py-2 text-sm font-medium text-white hover:bg-sprout-500 disabled:opacity-50"
+        >
+          {busy ? "Adding…" : "Add learning sessions to Google Calendar"}
+        </button>
+      </div>
       <h2 className="text-sm font-medium text-sprout-200/90">Edit with natural language</h2>
       <p className="text-xs text-[var(--muted)]">
         Try: “make this week lighter”, “push to next week”, or “move tomorrow to Thursday
