@@ -18,6 +18,23 @@ export interface SproutPlan {
   summary: string;
   phases: { name: string; focus: string }[];
   tasks: PlanTask[];
+  /**
+   * Optional structured fields captured from the AI plan generator,
+   * exposed via the AI plan disclosure on the tend page.
+   */
+  rationale?: string[];
+  weeklyShape?: {
+    lessons: number;
+    reviews: number;
+    milestoneEvery: string;
+  };
+  sessionsPlanned?: number;
+}
+
+/** One Fern's note rendered above the phase trail on the tend page. */
+export interface FernNote {
+  kicker: string; // e.g. "fern's note"
+  body: string;
 }
 
 export interface TimeWindow {

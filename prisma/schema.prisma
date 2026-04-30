@@ -88,6 +88,10 @@ model LearningPlan {
   recommendations String @default("[]")
   status        String   @default("active") // active, archived, paused
 
+  /// AI-authored "Fern's notes" rendered atop the tend page; JSON array of {kicker, body}.
+  fernNotes              String    @default("[]")
+  fernNotesGeneratedAt   DateTime?
+
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)

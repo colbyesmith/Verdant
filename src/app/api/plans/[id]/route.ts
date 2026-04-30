@@ -134,3 +134,20 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   });
   return NextResponse.json({ plan: updated });
 }
+
+export async function DELETE(_: Request, { params }: RouteParams) {
+  const s = await auth();
+  if (!s?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const { id } = await params;
+  const plan = await prisma.learningPlan.findFirst({
+    where: { id, userId: s.user.id },
+    select: { id: true },
+  });
+  if (!plan) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  await prisma.learningPlan.delete({ where: { id } });
+  return NextResponse.json({ ok: true });
+}

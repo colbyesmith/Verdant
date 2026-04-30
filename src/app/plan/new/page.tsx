@@ -10,15 +10,7 @@ export default async function NewPlanPage() {
   }
   return (
     <Shell>
-      <div className="mx-auto max-w-lg space-y-2">
-        <h1 className="text-2xl font-semibold">New sprout</h1>
-        <p className="text-sm text-[var(--muted)]">
-          One active plan in the MVP. Creating a new sprout archives your current one.
-        </p>
-        <div className="pt-4">
-          <NewPlanForm />
-        </div>
-      </div>
+      <NewPlanForm />
     </Shell>
   );
 }

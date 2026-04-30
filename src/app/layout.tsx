@@ -1,20 +1,37 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Fraunces, Caveat, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
 
-const inter = Inter({ subsets: ["latin"], variable: "--font-geist-sans" });
+const fraunces = Fraunces({
+  subsets: ["latin"],
+  variable: "--font-fraunces",
+  axes: ["opsz"],
+});
+const caveat = Caveat({
+  subsets: ["latin"],
+  variable: "--font-caveat",
+  weight: ["400", "500", "600", "700"],
+});
+const jetbrains = JetBrains_Mono({
+  subsets: ["latin"],
+  variable: "--font-jetbrains",
+  weight: ["400", "500"],
+});
 
 export const metadata: Metadata = {
-  title: "Verdant — Learning plans that grow with you",
+  title: "Verdant — a garden journal for learning",
   description:
-    "Turn a learning goal into a realistic schedule in your calendar, with adaptive rescheduling and progress feedback.",
+    "Plant a learning goal. Verdant tends it: phases, practice, and reviews placed gently into your real calendar.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={inter.variable}>
-      <body className="font-sans text-[15px]">
+    <html
+      lang="en"
+      className={`${fraunces.variable} ${caveat.variable} ${jetbrains.variable}`}
+    >
+      <body>
         <Providers>{children}</Providers>
       </body>
     </html>
