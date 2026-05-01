@@ -1,17 +1,81 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Sprout } from "@/components/verdant/art";
 import { differenceInCalendarWeeks } from "date-fns";
 
-const AI_PHASES = [
-  "reading your goal & resources",
-  "checking similar plans in the garden",
-  "drafting growth phases",
-  "weaving sessions into your calendar",
-  "sealing the plan in your journal",
+// Whimsical ticker words — gerund-form so they read naturally as
+// "fern is <word>…". Garden-flavored to match the rest of the app.
+const WHIMSICAL_WORDS = [
+  "sprouting",
+  "germinating",
+  "branching out",
+  "rooting around",
+  "blooming",
+  "unfurling",
+  "trellising",
+  "mulching",
+  "composting",
+  "pruning",
+  "photosynthesizing",
+  "pollinating",
+  "watering",
+  "tending",
+  "sowing",
+  "whispering to the moss",
+  "consulting the ferns",
+  "gathering dewdrops",
+  "counting petals",
+  "measuring sunbeams",
+  "untangling vines",
+  "bottling sunlight",
+  "befriending earthworms",
+  "coaxing buds",
+  "wrangling tendrils",
+  "tracing rootlines",
+  "whittling twigs",
+  "knitting leaves",
+  "brewing chlorophyll",
+  "translating birdsong",
+  "reading the rings",
+  "tasting the breeze",
+  "flirting with bees",
+  "greeting the snails",
+  "polishing acorns",
+  "charming the soil",
+  "humming to seedlings",
+  "tickling the daisies",
+  "chasing butterflies",
+  "weaving sunlight",
 ];
+
+interface Phase {
+  step: number;
+  of: number;
+  label: string;
+}
+
+interface DoneEvent {
+  type: "done";
+  step: number;
+  of: number;
+  plan: { id: string };
+}
+
+interface ProgressEvent {
+  type: "progress";
+  step: number;
+  of: number;
+  label: string;
+}
+
+interface ErrorEvent {
+  type: "error";
+  message: string;
+}
+
+type StreamEvent = ProgressEvent | DoneEvent | ErrorEvent;
 
 export function NewPlanForm() {
   const r = useRouter();
@@ -22,14 +86,20 @@ export function NewPlanForm() {
   const [freeformNote, setFreeformNote] = useState("");
   const [status, setStatus] = useState<"idle" | "saving" | "err">("idle");
   const [error, setError] = useState<string | null>(null);
-  const [aiPhaseIdx, setAiPhaseIdx] = useState(0);
+  const [phase, setPhase] = useState<Phase | null>(null);
+  const [whimsy, setWhimsy] = useState(WHIMSICAL_WORDS[0]);
+  const wordIdxRef = useRef(0);
 
+  // Whimsical word ticker — picks a fresh word every ~700ms during saving.
+  // Walks a shuffled cursor instead of pure random so users don't see repeats.
   useEffect(() => {
     if (status !== "saving") return;
-    setAiPhaseIdx(0);
+    wordIdxRef.current = Math.floor(Math.random() * WHIMSICAL_WORDS.length);
+    setWhimsy(WHIMSICAL_WORDS[wordIdxRef.current]);
     const id = setInterval(() => {
-      setAiPhaseIdx((i) => (i < AI_PHASES.length - 1 ? i + 1 : i));
-    }, 900);
+      wordIdxRef.current = (wordIdxRef.current + 1) % WHIMSICAL_WORDS.length;
+      setWhimsy(WHIMSICAL_WORDS[wordIdxRef.current]);
+    }, 700);
     return () => clearInterval(id);
   }, [status]);
 
@@ -44,6 +114,7 @@ export function NewPlanForm() {
     e.preventDefault();
     setStatus("saving");
     setError(null);
+    setPhase({ step: 0, of: 4, label: "reading your goal" });
     const cleanResources = resources.map((x) => x.trim()).filter(Boolean);
     const noteTrimmed = freeformNote.trim();
     const res = await fetch("/api/plans", {
@@ -57,19 +128,65 @@ export function NewPlanForm() {
         replaceActive: true,
       }),
     });
-    const j = (await res.json().catch(() => ({}))) as {
-      plan?: { id: string };
-      error?: string;
-    };
+
+    // Pre-stream errors (auth/validation) come back as plain JSON.
     if (!res.ok) {
+      const j = (await res.json().catch(() => ({}))) as { error?: string };
       setStatus("err");
       setError(j.error || res.statusText);
       return;
     }
-    if (j.plan?.id) {
-      r.push(`/plan/${j.plan.id}`);
+
+    const reader = res.body?.getReader();
+    if (!reader) {
+      setStatus("err");
+      setError("Streaming response not supported in this browser.");
+      return;
     }
-    setStatus("idle");
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let done: DoneEvent | null = null;
+
+    try {
+      while (true) {
+        const { value, done: streamDone } = await reader.read();
+        if (streamDone) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl;
+        while ((nl = buffer.indexOf("\n")) !== -1) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (!line) continue;
+          let ev: StreamEvent;
+          try {
+            ev = JSON.parse(line) as StreamEvent;
+          } catch {
+            continue;
+          }
+          if (ev.type === "progress") {
+            setPhase({ step: ev.step, of: ev.of, label: ev.label });
+          } else if (ev.type === "error") {
+            setStatus("err");
+            setError(ev.message);
+            return;
+          } else if (ev.type === "done") {
+            setPhase({ step: ev.of ?? 4, of: ev.of ?? 4, label: "ready!" });
+            done = ev;
+          }
+        }
+      }
+    } catch (err) {
+      setStatus("err");
+      setError(err instanceof Error ? err.message : "Connection lost.");
+      return;
+    }
+
+    if (done?.plan?.id) {
+      r.push(`/plan/${done.plan.id}`);
+    } else {
+      setStatus("err");
+      setError("Plan generation finished without a plan id.");
+    }
   }
 
   return (
@@ -267,9 +384,10 @@ export function NewPlanForm() {
                         fontStyle: "italic",
                         fontSize: 14,
                         color: "var(--moss-deep)",
+                        minHeight: 20,
                       }}
                     >
-                      {AI_PHASES[aiPhaseIdx]}
+                      {phase?.label ?? "reading your goal"}
                     </div>
                     <div style={{ marginTop: 10 }}>
                       <div
@@ -284,23 +402,36 @@ export function NewPlanForm() {
                         <div
                           style={{
                             height: "100%",
-                            width: `${((aiPhaseIdx + 1) / AI_PHASES.length) * 100}%`,
+                            width: `${
+                              phase
+                                ? Math.min(100, (phase.step / phase.of) * 100)
+                                : 4
+                            }%`,
                             background: "var(--moss)",
-                            transition: "width .6s ease",
+                            transition: "width .8s cubic-bezier(.4,.0,.2,1)",
                           }}
                         />
                       </div>
                     </div>
                     <div
+                      key={whimsy}
                       style={{
-                        marginTop: 10,
+                        marginTop: 12,
                         fontFamily: "var(--font-jetbrains)",
-                        fontSize: 10,
+                        fontSize: 11,
                         color: "var(--ink-faded)",
+                        animation: "whimsy-fade .5s ease",
+                        minHeight: 14,
                       }}
                     >
-                      fern is studying your goal and the patch of garden you have open
+                      fern is {whimsy}…
                     </div>
+                    <style>{`
+                      @keyframes whimsy-fade {
+                        from { opacity: 0; transform: translateY(2px); }
+                        to { opacity: 1; transform: translateY(0); }
+                      }
+                    `}</style>
                   </div>
                 )}
                 {status !== "saving" && skill && weeks && (
