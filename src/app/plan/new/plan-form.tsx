@@ -83,6 +83,9 @@ export function NewPlanForm() {
   const [deadline, setDeadline] = useState("");
   const [resources, setResources] = useState<string[]>([""]);
   const [intensity, setIntensity] = useState(2);
+  const [postDeadlineMode, setPostDeadlineMode] = useState<"stop" | "maintain">(
+    "stop"
+  );
   const [freeformNote, setFreeformNote] = useState("");
   const [status, setStatus] = useState<"idle" | "saving" | "err">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -126,6 +129,8 @@ export function NewPlanForm() {
         initialResources: cleanResources,
         freeformNote: noteTrimmed.length > 0 ? noteTrimmed : undefined,
         replaceActive: true,
+        intensity,
+        postDeadlineMode,
       }),
     });
 
@@ -253,11 +258,11 @@ export function NewPlanForm() {
                       value={intensity}
                       onChange={(e) => setIntensity(Number(e.target.value))}
                     >
-                      <option value={1}>gentle — short daily nudges</option>
-                      <option value={2}>steady — most weekdays</option>
-                      <option value={3}>focused — daily deep work</option>
+                      <option value={1}>gentle — ~80% recall on deadline</option>
+                      <option value={2}>steady — ~90% recall on deadline</option>
+                      <option value={3}>focused — ~95% recall on deadline</option>
                     </select>
-                    <span className="hint">we&apos;ll pace you, no burnout</span>
+                    <span className="hint">drives review frequency — higher intensity = more reviews</span>
                   </div>
                 </div>
                 <div className="field">
@@ -320,6 +325,28 @@ export function NewPlanForm() {
                   />
                   <span className="hint">
                     fern reads this verbatim while drafting your plan.
+                  </span>
+                </div>
+                <div className="field">
+                  <label
+                    htmlFor="postDeadlineMode"
+                    style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}
+                  >
+                    <input
+                      id="postDeadlineMode"
+                      type="checkbox"
+                      checked={postDeadlineMode === "maintain"}
+                      onChange={(e) =>
+                        setPostDeadlineMode(e.target.checked ? "maintain" : "stop")
+                      }
+                      style={{ width: 16, height: 16, cursor: "pointer" }}
+                    />
+                    <span>Keep practicing reviews after the deadline</span>
+                  </label>
+                  <span className="hint">
+                    {postDeadlineMode === "maintain"
+                      ? "after the deadline, light reviews continue (~70% recall) to keep the skill fresh."
+                      : "after the deadline, the plan archives and reviews stop. you can opt in to maintenance later."}
                   </span>
                 </div>
 

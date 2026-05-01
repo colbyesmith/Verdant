@@ -20,10 +20,10 @@ You design "sprouts" — multi-week learning plans for self-directed learners. A
 
 Use these principles:
 - **Phases first.** Break the plan into 2–5 named phases (e.g. Foundations / Build / Combine / Polish), each with a sharp focus sentence.
-- **Spaced repetition.** Schedule review tasks 2–4 days after the lessons they reinforce. Use \`mustFollowTaskId\` and \`minDaysAfterPredecessor\` on review tasks to encode this spacing.
+- **Lessons and milestones only.** Emit ONLY tasks of type "lesson" and "milestone". DO NOT emit any tasks of type "review". Verdant generates review tasks automatically using a spaced-repetition scheduler that adapts to the learner's performance — your reviews would conflict with it.
 - **Milestone gates.** End each phase with a milestone task that visibly proves the phase is complete (e.g. "film yourself doing 2 clean reps"). Set \`preferStandalone: true\` on milestones so they don't share a daily block.
-- **Realistic time.** Keep individual sessions in the 15–90 minute range. Most lessons should be 30–60 min; reviews 15–30 min; milestones 30–60 min.
-- **Pace to the user's actual time budget.** The user prompt includes a per-week minutes summary; respect anomaly notes (e.g. "mostly blocked Mon/Tue") by placing lighter weeks where reality is constrained.
+- **Realistic time.** Keep individual sessions in the 15–90 minute range. Most lessons should be 30–60 min; milestones 30–60 min.
+- **Pace to the user's actual time budget.** The user prompt includes a per-week minutes summary; respect anomaly notes (e.g. "mostly blocked Mon/Tue") by placing lighter weeks where reality is constrained. Leave headroom — the spaced-repetition scheduler will add review sessions automatically.
 - **Time-of-day hints.** Default \`preferredTimeOfDay\` to the user's strongest histogram bucket. Mornings for milestones when possible.
 - **Priority.** Every task must have \`priority\`: "core" tasks are essential to the goal; "stretch" tasks are extras that may be dropped if the schedule overflows. Mark stretch sparingly.
 - **Use the resources.** If the user provided links, weave them into the early lesson tasks via the resourceRef field.
@@ -107,7 +107,7 @@ export function buildSproutPlanUserPrompt(input: SproutPlanPromptInput): string 
           {
             id: 'OPTIONAL stable id like "t-week0-foundations". If you use mustFollowTaskId, the predecessor must have an id.',
             title: "Concrete session title",
-            type: "lesson | review | milestone",
+            type: 'lesson | milestone — DO NOT emit "review". Reviews are auto-generated.',
             minutes: "integer in [15, 90]",
             weekIndex: `integer in [0, ${input.weeks - 1}]`,
             dayOffsetInWeek: "integer in [0, 6] — 0 = Monday",
@@ -118,7 +118,7 @@ export function buildSproutPlanUserPrompt(input: SproutPlanPromptInput): string 
             preferredTimeOfDay:
               '"morning" | "afternoon" | "evening" | "any" — soft hint.',
             mustFollowTaskId:
-              'OPTIONAL: id of the task this one must come after (for review tasks reinforcing a specific lesson).',
+              "OPTIONAL: id of the task this one must come after (e.g. milestone after the lessons it tests).",
             minDaysAfterPredecessor:
               "OPTIONAL integer days; pair with mustFollowTaskId.",
             preferStandalone:
@@ -146,10 +146,10 @@ export function buildSproutPlanUserPrompt(input: SproutPlanPromptInput): string 
     `Constraints:`,
     `- 2-5 phases. Each phase ends with a milestone task.`,
     `- Spread tasks across the whole window — do not pile everything into week 0.`,
-    `- Reviews must come after the lessons they reinforce; encode this with mustFollowTaskId + minDaysAfterPredecessor.`,
+    `- DO NOT emit any "review" tasks. Verdant adds adaptive review sessions automatically; including reviews here would double-book the calendar.`,
     `- Every task must have a priority of "core" or "stretch".`,
     `- The "rationale" array is your audit trail: why this phase order, why this pacing, why these milestones. The user reads it.`,
-    `- weeklyShape and sessionsPlanned describe the plan you produced (not abstract advice).`,
+    `- weeklyShape and sessionsPlanned describe the plan you produced (not abstract advice). Set weeklyShape.reviews to 0 — reviews are scheduled separately.`,
   ];
   return lines.join("\n");
 }

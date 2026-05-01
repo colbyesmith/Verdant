@@ -87,8 +87,65 @@ export default async function SessionDetailPage({
 
   const sprout: SproutPlan = JSON.parse(plan.planJson) as SproutPlan;
   const tasks = sprout.tasks || [];
-  const task = tasks.find((t) => t.id === taskId);
-  if (!task) notFound();
+  const planTask = tasks.find((t) => t.id === taskId);
+
+  // Schedule: when is this task happening?
+  const schedule: ScheduledSession[] = JSON.parse(
+    plan.scheduleJson || "[]"
+  ) as ScheduledSession[];
+  const scheduledFor = schedule.find(
+    (row) =>
+      row.planTaskId === taskId ||
+      row.agenda?.some((a) => a.planTaskId === taskId)
+  );
+
+  // If the taskId isn't in planJson, look it up as a ReviewInstance.
+  // FSRS-managed reviews live in their own table; we synthesize a PlanTask
+  // shape so the rest of the rendering flow stays unchanged.
+  let task: PlanTask;
+  let isReview = false;
+  let reviewState: { rating: number | null; completed: boolean } | null = null;
+  let reviewParentLessonId: string | null = null;
+
+  if (planTask) {
+    task = planTask;
+  } else {
+    const ri = await prisma.reviewInstance.findUnique({
+      where: { id: taskId },
+      include: { lessonState: true },
+    });
+    if (!ri || ri.planId !== plan.id) notFound();
+    isReview = true;
+    reviewParentLessonId = ri.lessonState.lessonId;
+    const parent = tasks.find((t) => t.id === ri.lessonState.lessonId);
+    const parentTitle = parent?.title ?? "earlier lesson";
+    const start = scheduledFor ? new Date(scheduledFor.start) : ri.dueAt;
+    const startMs = start.getTime();
+    const planStart = new Date(plan.startDate).getTime();
+    const weekIndex = Math.max(
+      0,
+      Math.floor((startMs - planStart) / (7 * 86_400_000))
+    );
+    const dow = (start.getDay() + 6) % 7;
+    task = {
+      id: ri.id,
+      title: `Review: ${parentTitle}`,
+      type: "review",
+      minutes: 15,
+      weekIndex,
+      dayOffsetInWeek: dow,
+      description: parent?.description
+        ? `Re-engage with: ${parent.description}`
+        : `Pull up what you learned in "${parentTitle}" and rehearse the core idea.`,
+      resourceRef: parent?.resourceRef,
+      dueAt: ri.dueAt.toISOString(),
+      priority: "core",
+    };
+    reviewState = {
+      rating: ri.rating,
+      completed: ri.completedAt != null,
+    };
+  }
 
   const phases = sprout.phases || [];
   const phaseIdx = phaseForWeek(task.weekIndex, phases.length);
@@ -105,34 +162,36 @@ export default async function SessionDetailPage({
   );
   const taskIndex = sortedTasks.findIndex((t) => t.id === taskId);
 
-  // For reviews: lessons earlier in same phase
+  // For reviews: surface the parent lesson if available.
   const reviewedLessons =
     task.type === "review"
-      ? sortedTasks.filter(
-          (t, i) =>
-            i < taskIndex &&
-            t.type === "lesson" &&
-            phaseForWeek(t.weekIndex, phases.length) === phaseIdx
-        )
+      ? reviewParentLessonId
+        ? tasks.filter((t) => t.id === reviewParentLessonId)
+        : sortedTasks.filter(
+            (t, i) =>
+              i < taskIndex &&
+              t.type === "lesson" &&
+              phaseForWeek(t.weekIndex, phases.length) === phaseIdx
+          )
       : [];
 
   // For milestones: every task before this in time (any type)
   const builtOn =
     task.type === "milestone" ? sortedTasks.filter((_, i) => i < taskIndex) : [];
 
-  // Schedule: when is this task happening?
-  const schedule: ScheduledSession[] = JSON.parse(
-    plan.scheduleJson || "[]"
-  ) as ScheduledSession[];
-  const scheduledFor = schedule.find(
-    (row) =>
-      row.planTaskId === taskId ||
-      row.agenda?.some((a) => a.planTaskId === taskId)
-  );
-
-  const completion = await prisma.taskCompletion.findUnique({
-    where: { planId_taskId: { planId: id, taskId } },
-  });
+  const completion = isReview
+    ? null
+    : await prisma.taskCompletion.findUnique({
+        where: { planId_taskId: { planId: id, taskId } },
+      });
+  const initialDone = isReview ? Boolean(reviewState?.completed) : Boolean(completion?.completed);
+  const initialRating = isReview
+    ? reviewState?.rating && reviewState.rating >= 1
+      ? reviewState.rating
+      : 0
+    : completion?.rating && completion.rating >= 1
+      ? completion.rating
+      : 0;
 
   const cueLines = task.type === "milestone"
     ? [
@@ -234,9 +293,7 @@ export default async function SessionDetailPage({
                     {format(parseISO(scheduledFor.start), "EEE MMM d · h:mm a")}
                   </span>
                 )}
-                {completion?.completed && (
-                  <span className="chip moss">done ✓</span>
-                )}
+                {initialDone && <span className="chip moss">done ✓</span>}
               </div>
               <h1
                 className="serif-display"
@@ -289,12 +346,9 @@ export default async function SessionDetailPage({
                 <SessionControls
                   planId={id}
                   taskId={taskId}
-                  initialDone={Boolean(completion?.completed)}
-                  initialEffectiveness={
-                    completion?.effectiveness && completion.effectiveness >= 1
-                      ? completion.effectiveness
-                      : 0
-                  }
+                  taskType={task.type}
+                  initialDone={initialDone}
+                  initialRating={initialRating}
                 />
               </div>
               <div

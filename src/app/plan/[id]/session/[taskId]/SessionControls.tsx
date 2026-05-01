@@ -2,31 +2,34 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { StarRating } from "@/components/verdant/StarRating";
+import { RatingButtons, type RatingValue } from "@/components/verdant/RatingButtons";
+import type { TaskType } from "@/types/plan";
 
 export function SessionControls({
   planId,
   taskId,
+  taskType,
   initialDone,
-  initialEffectiveness,
+  initialRating,
 }: {
   planId: string;
   taskId: string;
+  taskType: TaskType;
   initialDone: boolean;
-  initialEffectiveness: number;
+  initialRating: number;
 }) {
   const r = useRouter();
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(initialDone);
-  const [eff, setEff] = useState(initialEffectiveness);
+  const [rating, setRating] = useState(initialRating);
 
-  async function save(nextDone: boolean, nextEff: number) {
+  async function save(nextDone: boolean, nextRating: number) {
     setBusy(true);
-    const body: { taskId: string; completed?: boolean; effectiveness?: number } = {
+    const body: { taskId: string; completed?: boolean; rating?: number } = {
       taskId,
       completed: nextDone,
     };
-    if (nextEff > 0) body.effectiveness = nextEff;
+    if (nextRating > 0) body.rating = nextRating;
     await fetch(`/api/plans/${planId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -44,7 +47,7 @@ export function SessionControls({
         background: done ? "var(--leaf-pale)" : "var(--paper)",
         display: "flex",
         flexDirection: "column",
-        gap: 10,
+        gap: 12,
       }}
     >
       <div className="tag">tend this session</div>
@@ -54,34 +57,22 @@ export function SessionControls({
         onClick={() => {
           const next = !done;
           setDone(next);
-          save(next, eff);
+          save(next, rating);
         }}
         disabled={busy}
         style={{ justifyContent: "center" }}
       >
         {done ? "marked done ✓" : "mark done"}
       </button>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <span
-          style={{
-            fontFamily: "var(--font-fraunces)",
-            fontStyle: "italic",
-            fontSize: 14,
-            color: "var(--ink-soft)",
-          }}
-        >
-          how did it land?
-        </span>
-        <StarRating
-          value={eff}
-          onChange={(v) => {
-            if (busy) return;
-            setEff(v);
-            save(done, v);
-          }}
-          size={20}
-        />
-      </div>
+      <RatingButtons
+        value={rating || null}
+        taskType={taskType}
+        disabled={busy}
+        onChange={(v: RatingValue) => {
+          setRating(v);
+          save(done, v);
+        }}
+      />
     </div>
   );
 }

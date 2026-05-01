@@ -101,28 +101,79 @@ model LearningPlan {
   /// User-declared blackout date ranges, JSON: [{from: "YYYY-MM-DD", to: "YYYY-MM-DD", reason?: "..."}]
   manualBlackouts  String @default("[]")
 
+  /// FSRS retention target driver: 1 (gentle, R=0.80), 2 (steady, R=0.90), 3 (focused, R=0.95).
+  intensity         Int     @default(2)
+  /// FSRS post-deadline behavior: "stop" (archive at deadline) | "maintain" (continue at R=0.7).
+  postDeadlineMode  String  @default("stop")
+
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  taskCompletions TaskCompletion[]
+  taskCompletions  TaskCompletion[]
+  lessonStates     LessonState[]
+  reviewInstances  ReviewInstance[]
 
   @@index([userId, status])
 }
 
-/// Stores completion, effectiveness rating, milestone status
+/// Stores completion + rating for lesson and milestone tasks. Reviews use ReviewInstance instead.
 model TaskCompletion {
   id         String   @id @default(cuid())
   planId     String
   taskId     String
   completed  Boolean  @default(false)
-  /// 1-5 self-rated effectiveness
-  effectiveness Int?
+  /// FSRS-aligned 4-button rating mapped to {1,2,4,5}. 1=Again, 2=Hard, 4=Good, 5=Easy.
+  rating     Int?
   completedAt   DateTime?
 
   plan LearningPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
 
   @@unique([planId, taskId])
   @@index([planId])
+}
+
+/// FSRS memory state per lesson. Future per-concept migration: rename to ConceptState,
+/// change FK from lessonId to conceptId. Same shape otherwise.
+model LessonState {
+  id           String   @id @default(cuid())
+  planId       String
+  /// References the lesson task's id within planJson (PlanTask.id)
+  lessonId     String
+  /// FSRS difficulty (1.0 - 10.0)
+  difficulty   Float
+  /// FSRS stability in days
+  stability    Float
+  /// Last time user rated a review of this lesson; null until first review
+  lastReview   DateTime?
+  /// Number of "Again" ratings — drives lapse handling
+  lapses       Int      @default(0)
+
+  plan         LearningPlan     @relation(fields: [planId], references: [id], onDelete: Cascade)
+  reviews      ReviewInstance[]
+
+  @@unique([planId, lessonId])
+  @@index([planId])
+}
+
+/// Materialized review tasks (projected + completed). One row per scheduled review of a lesson.
+model ReviewInstance {
+  id            String    @id @default(cuid())
+  planId        String
+  lessonStateId String
+  /// True = FSRS-projected, not yet rated. False = user rated it.
+  projected     Boolean   @default(true)
+  /// FSRS-recommended due date; the packer turns this into a calendar slot.
+  dueAt         DateTime
+  /// Set when user rates the review.
+  completedAt   DateTime?
+  /// 1=Again, 2=Hard, 4=Good, 5=Easy. Null while projected.
+  rating        Int?
+
+  lessonState   LessonState   @relation(fields: [lessonStateId], references: [id], onDelete: Cascade)
+  plan          LearningPlan  @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@index([planId, dueAt])
+  @@index([lessonStateId, projected])
 }
 
 /// Singleton counter for total sprouts ever created on the landing page.

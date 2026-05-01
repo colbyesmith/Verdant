@@ -72,7 +72,7 @@ export default async function JournalEntryPage({
       ? format(parseISO(scheduledFor.start), "EEE, MMM d")
       : "—";
 
-  const rating = completion?.effectiveness ?? 0;
+  const rating = completion?.rating ?? 0;
   const completed = Boolean(completion?.completed);
 
   return (
