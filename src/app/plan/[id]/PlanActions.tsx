@@ -30,12 +30,11 @@ export function PlanActions({
       error?: string;
       plan?: unknown;
       message?: string;
-      hf?: HfDiag;
     };
     if (!res.ok) {
-      setErr((j.error || "Could not apply edit") + formatHfNote(j.hf));
+      setErr(j.error || "Could not apply edit");
     } else {
-      setMessage((j.message || "Updated.") + formatHfNote(j.hf));
+      setMessage(j.message || "Updated.");
       setText("");
       r.refresh();
     }

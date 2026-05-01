@@ -1,9 +1,6 @@
 import { auth } from "@/auth";
 import { smoothUpdate, slotKeyFromIso } from "@/lib/effectiveness";
-import {
-  applyNaturalLanguageEditSmart,
-  type HfNlDiagnostic,
-} from "@/lib/nl-schedule";
+import { applyNaturalLanguageEditSmart } from "@/lib/nl-schedule";
 import { prisma } from "@/lib/db";
 import { ensureUserPreferences } from "@/lib/user";
 import { rescheduleUncompleted } from "@/lib/time-windows";
@@ -13,7 +10,8 @@ import { parseBlackouts, blackoutsToBusy, type ManualBlackout } from "@/lib/blac
 import { interpretEdit } from "@/lib/edit-plan";
 import { applyEditOps } from "@/lib/apply-edit-ops";
 import { packWithScoring } from "@/lib/scoring-pack";
-import type { ScheduledSession, SproutPlan, TimeWindows } from "@/types/plan";
+import type { ScheduledSession, SproutPlan } from "@/types/plan";
+import { parseTimeWindowsJson } from "@/lib/default-preferences";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -102,8 +100,6 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   }
 
   let outSchedule = plan.scheduleJson;
-  let nlMessage: string | undefined;
-  let nlHf: HfNlDiagnostic | undefined;
   if (p.data.scheduleJson) {
     outSchedule = p.data.scheduleJson;
   }
@@ -122,7 +118,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     });
     if (llm.ok) {
       const pref = await ensureUserPreferences(s.user.id);
-      const tw: TimeWindows = JSON.parse(pref.timeWindows || "{}") as TimeWindows;
+      const tw = parseTimeWindowsJson(pref.timeWindows);
       const slotEff = JSON.parse(pref.slotEffectiveness || "{}") as Record<
         string,
         number
@@ -151,7 +147,13 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       outManualBlackoutsFromAI = result.manualBlackoutsJson;
       editSummary = llm.summary;
     } else {
-      const r = applyNaturalLanguageEdit(p.data.naturalLanguage, sessions, now);
+      // interpretEdit's structured-LLM path failed; fall back to the HF
+      // natural-language editor that returns a full updated schedule.
+      const { result: r } = await applyNaturalLanguageEditSmart(
+        p.data.naturalLanguage,
+        sessions,
+        now
+      );
       if (!r.ok) {
         return NextResponse.json({ error: r.error }, { status: 400 });
       }
@@ -175,7 +177,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     outManualBlackouts = JSON.stringify(p.data.manualBlackouts);
     if (!p.data.rescheduleFrom) {
       const pref = await ensureUserPreferences(s.user.id);
-      const tw: TimeWindows = JSON.parse(pref.timeWindows || "{}") as TimeWindows;
+      const tw = parseTimeWindowsJson(pref.timeWindows);
       const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
       const from = new Date();
       const calRead = await getBusyIntervals({
@@ -199,7 +201,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   }
   if (p.data.rescheduleFrom) {
     const pref = await ensureUserPreferences(s.user.id);
-    const tw: TimeWindows = JSON.parse(pref.timeWindows || "{}") as TimeWindows;
+    const tw = parseTimeWindowsJson(pref.timeWindows);
     const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
     const from = new Date(p.data.rescheduleFrom);
     const busyRead = await getBusyIntervals({
@@ -226,7 +228,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   // LLM. Preserves locked future sessions and packs everything else.
   if (p.data.rebuildSchedule) {
     const pref = await ensureUserPreferences(s.user.id);
-    const tw: TimeWindows = JSON.parse(pref.timeWindows || "{}") as TimeWindows;
+    const tw = parseTimeWindowsJson(pref.timeWindows);
     const slotEff = JSON.parse(pref.slotEffectiveness || "{}") as Record<
       string,
       number

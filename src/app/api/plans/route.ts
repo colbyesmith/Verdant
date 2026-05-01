@@ -6,7 +6,8 @@ import { ensureUserPreferences } from "@/lib/user";
 import { packWithScoring } from "@/lib/scoring-pack";
 import { getBusyIntervals } from "@/lib/calendar-read";
 import { summarizeAvailability } from "@/lib/availability-summary";
-import type { SproutPlan, TimeWindows } from "@/types/plan";
+import type { SproutPlan } from "@/types/plan";
+import { parseTimeWindowsJson } from "@/lib/default-preferences";
 import { NextResponse, after } from "next/server";
 import { z } from "zod";
 
@@ -111,9 +112,7 @@ export async function POST(request: Request) {
           return;
         }
 
-        const timeWindows: TimeWindows = JSON.parse(
-          pref.timeWindows || "{}"
-        ) as TimeWindows;
+        const timeWindows = parseTimeWindowsJson(pref.timeWindows);
         const maxM = pref.maxMinutesDay;
         const slotEffectiveness = JSON.parse(
           pref.slotEffectiveness || "{}"
@@ -196,6 +195,21 @@ export async function POST(request: Request) {
         });
         tick("prisma.create", tDb);
         tick("total(before-response)", t0);
+
+        // Singleton counter for the landing-page "sprouts in the ground"
+        // tally. Atomic increment via upsert so the first sprout in a
+        // fresh DB initializes the row at 1.
+        after(async () => {
+          try {
+            await prisma.sproutCounter.upsert({
+              where: { id: 1 },
+              create: { id: 1, total: 1 },
+              update: { total: { increment: 1 } },
+            });
+          } catch (err) {
+            if (TIMING) console.warn("[plans.POST] counter increment failed:", err);
+          }
+        });
 
         send({
           type: "done",

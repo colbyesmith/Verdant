@@ -155,7 +155,7 @@ export function buildScheduleFromPlan(
     let guard = 0;
     while (guard < 500) {
       guard++;
-      let dayCap = maxMinutesThatFitInWindow(cursorDay, timeWindows, maxMinutesPerDay, busy);
+      const dayCap = maxMinutesThatFitInWindow(cursorDay, timeWindows, maxMinutesPerDay, busy);
       if (dayCap === 0) {
         flush();
         const next = advanceToLearnableDay(addDays(cursorDay, 1), timeWindows, deadline, busy);
@@ -312,12 +312,3 @@ export function rescheduleUncompleted(
   );
 }
 
-/**
- * Bias: prefer slots with higher effectiveness score (heuristic: parse slot key)
- */
-export function scoreSlot(
-  _start: Date,
-  _effectiveness: Record<string, number>
-): number {
-  return 0;
-}

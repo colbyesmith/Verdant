@@ -6,7 +6,8 @@ import { getBusyIntervals } from "@/lib/calendar-read";
 import { summarizeAvailability } from "@/lib/availability-summary";
 import { packWithScoring } from "@/lib/scoring-pack";
 import { parseBlackouts, blackoutsToBusy } from "@/lib/blackouts";
-import type { ScheduledSession, SproutPlan, TimeWindows } from "@/types/plan";
+import type { ScheduledSession, SproutPlan } from "@/types/plan";
+import { parseTimeWindowsJson } from "@/lib/default-preferences";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -42,7 +43,7 @@ export async function POST(request: Request, { params }: RouteParams) {
   const wantRevert = parsed.data.revert === true;
 
   const pref = await ensureUserPreferences(s.user.id);
-  const tw: TimeWindows = JSON.parse(pref.timeWindows || "{}") as TimeWindows;
+  const tw = parseTimeWindowsJson(pref.timeWindows);
   const slotEffectiveness = JSON.parse(
     pref.slotEffectiveness || "{}"
   ) as Record<string, number>;

@@ -51,14 +51,19 @@ function noteForWeek(
     const day = addDays(weekStart, i);
     const dow = getDay(day);
     const wd = String(dow);
-    const w = timeWindows[wd] ?? timeWindows[wd === "0" ? "7" : wd];
-    if (!w) continue;
+    const list = timeWindows[wd] ?? timeWindows[wd === "0" ? "7" : wd];
+    if (!list || list.length === 0) continue;
     const free = freeMinutesOnDay(day, timeWindows, busy);
-    const total =
-      (parseInt(w.end.split(":")[0], 10) * 60 +
-        parseInt(w.end.split(":")[1], 10)) -
-      (parseInt(w.start.split(":")[0], 10) * 60 +
-        parseInt(w.start.split(":")[1], 10));
+    let total = 0;
+    for (const w of list) {
+      const sm =
+        parseInt(w.start.split(":")[0], 10) * 60 +
+        parseInt(w.start.split(":")[1], 10);
+      const em =
+        parseInt(w.end.split(":")[0], 10) * 60 +
+        parseInt(w.end.split(":")[1], 10);
+      total += Math.max(0, em - sm);
+    }
     if (total > 0 && free / total < 0.25) blockedDows.push(dow);
   }
   if (blockedDows.length === 0) return null;

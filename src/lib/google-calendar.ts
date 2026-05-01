@@ -105,6 +105,45 @@ export async function insertOrSkip(
 }
 
 /**
+ * PATCH an existing Google Calendar event to new start/end times. Used by the
+ * drag-to-move flow on the schedule page when the session was already synced.
+ * Throws on non-OK responses; callers should mark `googleSynced=false` on failure.
+ */
+export async function updateSessionInGoogle(
+  accessToken: string,
+  session: ScheduledSession
+): Promise<void> {
+  if (!session.calendarEventId) {
+    throw new Error("session has no calendarEventId — call syncSessionToGoogle instead");
+  }
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const summary =
+    session.title.length > 900 ? `${session.title.slice(0, 897)}…` : session.title;
+  const res = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+      CAL_PRIMARY
+    )}/events/${encodeURIComponent(session.calendarEventId)}`,
+    {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        summary,
+        start: { dateTime: session.start, timeZone },
+        end: { dateTime: session.end, timeZone },
+        description: calendarEventDescription(session),
+      }),
+    }
+  );
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(calendarHttpError(res.status, errBody));
+  }
+}
+
+/**
  * Create Google Calendar events for sessions that are not marked synced yet.
  * Runs sequentially to reduce API rate issues.
  */

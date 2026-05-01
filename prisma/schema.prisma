@@ -124,3 +124,11 @@ model TaskCompletion {
   @@unique([planId, taskId])
   @@index([planId])
 }
+
+/// Singleton counter for total sprouts ever created on the landing page.
+/// Increments only — never decrements when a user deletes their plan.
+/// Always queried with `id = 1`.
+model SproutCounter {
+  id    Int @id @default(1)
+  total Int @default(0)
+}

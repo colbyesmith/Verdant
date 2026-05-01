@@ -5,8 +5,17 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 const patch = z.object({
-  timeWindows: z.record(z.string(), z.object({ start: z.string(), end: z.string() })).optional(),
-  maxMinutesDay: z.number().min(20).max(300).optional(),
+  // Each weekday key (0-6, Date.getDay() semantics) maps to zero or more
+  // {start, end} ranges. The heatmap UI always sends the array shape.
+  timeWindows: z
+    .record(
+      z.string(),
+      z.array(z.object({ start: z.string(), end: z.string() }))
+    )
+    .optional(),
+  // Slider in the settings form goes 15..180; keep the validator floor in
+  // sync so the API doesn't silently reject the lower notches of the slider.
+  maxMinutesDay: z.number().min(15).max(300).optional(),
   weeklyMinutesTarget: z.number().int().min(30).max(3000).nullable().optional(),
   calendarConnected: z.boolean().optional(),
 });

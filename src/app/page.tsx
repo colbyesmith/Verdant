@@ -13,6 +13,20 @@ import {
   SunArt,
   WateringCan,
 } from "@/components/verdant/art";
+import { prisma } from "@/lib/db";
+
+// Counter is a per-request DB read; opt out of static rendering so the
+// landing page reflects the current total on every visit.
+export const dynamic = "force-dynamic";
+
+async function getSproutTotal(): Promise<number> {
+  try {
+    const row = await prisma.sproutCounter.findUnique({ where: { id: 1 } });
+    return row?.total ?? 0;
+  } catch {
+    return 0;
+  }
+}
 
 const PILLARS = [
   {
@@ -38,7 +52,8 @@ const PILLARS = [
   },
 ];
 
-export default function Home() {
+export default async function Home() {
+  const sproutTotal = await getSproutTotal();
   return (
     <Shell showHelper={false} showFooter={false}>
       <div style={{ position: "relative", padding: "0 36px 36px" }}>
@@ -160,7 +175,9 @@ export default function Home() {
                     color: "var(--ink-faded)",
                   }}
                 >
-                  4,200 sprouts in the ground this season
+                  {sproutTotal.toLocaleString()}{" "}
+                  {sproutTotal === 1 ? "sprout" : "sprouts"} in the ground
+                  this season
                 </div>
               </div>
             </div>
