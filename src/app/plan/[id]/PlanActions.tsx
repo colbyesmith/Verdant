@@ -2,29 +2,15 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { CalendarIcon, ForestSprite } from "@/components/verdant/art";
 
-type HfDiag = {
-  configured: boolean;
-  called: boolean;
-  rewrite: string | null;
-  httpStatus?: number;
-};
-
-function formatHfNote(hf?: HfDiag): string {
-  if (!hf) return "";
-  if (!hf.configured) {
-    return " · NL edits need HF_API_TOKEN in .env.";
-  }
-  if (!hf.called) {
-    return "";
-  }
-  const st = hf.httpStatus != null ? `${hf.httpStatus}` : "?";
-  const rw =
-    hf.rewrite && hf.rewrite.trim().length > 0 ? `"${hf.rewrite.trim()}"` : "(no line parsed)";
-  return ` · HF called (${st}), rewrite ${rw}.`;
-}
-
-export function PlanActions({ planId }: { planId: string }) {
+export function PlanActions({
+  planId,
+  hasPrevPlan,
+}: {
+  planId: string;
+  hasPrevPlan?: boolean;
+}) {
   const r = useRouter();
   const [text, setText] = useState("");
   const [message, setMessage] = useState<string | null>(null);
@@ -60,9 +46,7 @@ export function PlanActions({ planId }: { planId: string }) {
     setBusy(true);
     setErr(null);
     setMessage(null);
-    const res = await fetch(`/api/plans/${planId}/calendar`, {
-      method: "POST",
-    });
+    const res = await fetch(`/api/plans/${planId}/calendar`, { method: "POST" });
     const j = (await res.json().catch(() => ({}))) as {
       syncedCount?: number;
       pendingCount?: number;
@@ -75,15 +59,12 @@ export function PlanActions({ planId }: { planId: string }) {
       const n = j.syncedCount ?? 0;
       const pend = j.pendingCount ?? 0;
       if (n === 0 && (j.errors?.length ?? 0) > 0) {
-        setMessage(null);
         setErr(j.errors!.slice(0, 5).join(" "));
       } else {
         const bits = [`Added ${n} session(s) to Google Calendar.`];
         if (pend > 0) bits.push(`${pend} still pending.`);
         setMessage(bits.join(" "));
-        setErr(
-          j.errors?.length ? j.errors.slice(0, 3).join(" · ") : null
-        );
+        if (j.errors?.length) setErr(j.errors.slice(0, 3).join(" · "));
       }
       r.refresh();
     }
@@ -109,56 +90,191 @@ export function PlanActions({ planId }: { planId: string }) {
     setBusy(false);
   }
 
+  async function rebuildSchedule() {
+    setBusy(true);
+    setErr(null);
+    setMessage(null);
+    const res = await fetch(`/api/plans/${planId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rebuildSchedule: true }),
+    });
+    const j = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      summary?: string;
+    };
+    if (!res.ok) {
+      setErr(j.error || "Rebuild failed");
+    } else {
+      setMessage(j.summary || "Rebuilt schedule from your plan.");
+      r.refresh();
+    }
+    setBusy(false);
+  }
+
+  async function regenerate(revert = false) {
+    if (
+      !revert &&
+      !confirm(
+        "Regenerate this plan with the current AI? Your current plan is saved as a one-click revert."
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    setMessage(null);
+    const res = await fetch(`/api/plans/${planId}/regenerate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(revert ? { revert: true } : {}),
+    });
+    const j = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      overflow?: { id: string; title: string }[];
+      reverted?: boolean;
+    };
+    if (!res.ok) {
+      setErr(j.error || "Regenerate failed");
+    } else {
+      const over = j.overflow ?? [];
+      const verb = j.reverted ? "Reverted to previous plan" : "Regenerated plan";
+      setMessage(
+        over.length > 0
+          ? `${verb}. ${over.length} task(s) didn't fit before the deadline.`
+          : `${verb}.`
+      );
+      r.refresh();
+    }
+    setBusy(false);
+  }
+
   return (
-    <div className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--card)]/40 p-4">
-      <div className="rounded-lg border border-sprout-500/20 bg-sprout-950/40 p-3">
-        <h2 className="text-sm font-medium text-sprout-200/90">Google Calendar</h2>
-        <p className="mt-1 text-xs text-[var(--muted)]">
-          Create one event per scheduled session in your primary Google calendar. Sign in with
-          Google (same account as Settings). Use after creating the sprout or if automatic sync
-          did not run.
-        </p>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={addToCalendar}
-          className="mt-3 w-full rounded-lg bg-sprout-600 px-4 py-2 text-sm font-medium text-white hover:bg-sprout-500 disabled:opacity-50"
-        >
-          {busy ? "Adding…" : "Add learning sessions to Google Calendar"}
-        </button>
+    <div
+      className="ink-card"
+      style={{
+        padding: 18,
+        background: "var(--leaf-pale)",
+        position: "relative",
+        marginTop: 12,
+      }}
+    >
+      <div style={{ position: "absolute", left: -10, top: -16 }}>
+        <ForestSprite size={56} />
       </div>
-      <h2 className="text-sm font-medium text-sprout-200/90">Edit with natural language</h2>
-      <p className="text-xs text-[var(--muted)]">
-        Requires HF_API_TOKEN. Describe any change in plain English — the model returns an
-        updated schedule (use Rebalance from today separately if you want Verdant to pack
-        tasks into time windows again).
-      </p>
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="Describe a change to your plan…"
-          className="flex-1 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm"
-        />
-        <button
-          type="button"
-          disabled={busy || !text.trim()}
-          onClick={nl}
-          className="rounded-lg bg-sprout-600 px-4 py-2 text-sm font-medium text-white hover:bg-sprout-500 disabled:opacity-50"
+      <div style={{ paddingLeft: 50 }}>
+        <div className="tag" style={{ marginBottom: 4 }}>
+          ask fern
+        </div>
+        <div
+          style={{
+            fontFamily: "var(--font-fraunces)",
+            fontSize: 15,
+            lineHeight: 1.45,
+            color: "var(--ink)",
+            marginBottom: 12,
+          }}
         >
-          Apply
-        </button>
+          tell me a change in plain words — &quot;make this week lighter&quot;, &quot;move
+          tomorrow to Thursday night&quot;, &quot;push to next week&quot;.
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="describe a change to your plan…"
+            style={{
+              flex: 1,
+              minWidth: 240,
+              background: "var(--paper)",
+              border: "1.5px solid var(--ink)",
+              borderRadius: 10,
+              padding: "10px 14px",
+              fontFamily: "var(--font-fraunces)",
+              fontSize: 14,
+              outline: "none",
+            }}
+          />
+          <button
+            type="button"
+            disabled={busy || !text.trim()}
+            onClick={nl}
+            className="btn primary sm"
+          >
+            apply
+          </button>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={addToCalendar}
+            disabled={busy}
+            className="btn sm"
+            style={{ background: "var(--paper-warm)" }}
+          >
+            <CalendarIcon size={14} /> sync to Google
+          </button>
+          <button
+            type="button"
+            onClick={resched}
+            disabled={busy}
+            className="btn sm ghost"
+          >
+            rebalance from today
+          </button>
+          <button
+            type="button"
+            onClick={rebuildSchedule}
+            disabled={busy}
+            className="btn sm ghost"
+          >
+            rebuild schedule
+          </button>
+          <button
+            type="button"
+            onClick={() => regenerate(false)}
+            disabled={busy}
+            className="btn sm ghost"
+          >
+            regenerate plan
+          </button>
+          {hasPrevPlan && (
+            <button
+              type="button"
+              onClick={() => regenerate(true)}
+              disabled={busy}
+              className="btn sm ghost"
+            >
+              revert
+            </button>
+          )}
+        </div>
+        {message && (
+          <p
+            style={{
+              fontFamily: "var(--font-fraunces)",
+              fontStyle: "italic",
+              fontSize: 13,
+              color: "var(--moss-deep)",
+              marginTop: 10,
+            }}
+          >
+            {message}
+          </p>
+        )}
+        {err && (
+          <p
+            style={{
+              fontFamily: "var(--font-fraunces)",
+              fontSize: 13,
+              color: "var(--berry)",
+              marginTop: 10,
+            }}
+          >
+            {err}
+          </p>
+        )}
       </div>
-      <button
-        type="button"
-        disabled={busy}
-        onClick={resched}
-        className="w-full rounded-lg border border-[var(--border)] py-2 text-sm text-sprout-200 hover:bg-sprout-500/5 disabled:opacity-50"
-      >
-        Rebalance from today
-      </button>
-      {message && <p className="text-sm text-sprout-200/80">{message}</p>}
-      {err && <p className="text-sm text-rose-300/90">{err}</p>}
     </div>
   );
 }

@@ -7,9 +7,18 @@ export function SignOutButton() {
     <button
       type="button"
       onClick={() => signOut({ callbackUrl: "/" })}
-      className="text-xs text-[var(--muted)] hover:text-sprout-200"
+      style={{
+        background: "transparent",
+        border: "none",
+        fontFamily: "var(--font-jetbrains)",
+        fontSize: 11,
+        letterSpacing: "0.08em",
+        textTransform: "uppercase",
+        color: "var(--ink-faded)",
+        cursor: "pointer",
+      }}
     >
-      Sign out
+      sign out
     </button>
   );
 }

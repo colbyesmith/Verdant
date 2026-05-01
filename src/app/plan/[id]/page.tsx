@@ -1,106 +1,630 @@
 import { auth } from "@/auth";
 import { Shell } from "@/components/Shell";
-import { prisma } from "@/lib/db";
-import type { ScheduledSession, SproutPlan } from "@/types/plan";
+import { loadPlanState } from "@/lib/load-plan-state";
+import type { FernNote, SproutPlan } from "@/types/plan";
 import { redirect, notFound } from "next/navigation";
-import { format, parseISO } from "date-fns";
+import Link from "next/link";
+import { format, parseISO, differenceInCalendarDays } from "date-fns";
 import { PlanActions } from "./PlanActions";
-import { SessionRow } from "./SessionRow";
+import { DeleteSproutButton } from "./DeleteSproutButton";
+import { RoadAheadRow } from "./RoadAheadRow";
+import { FernNotesSection } from "./FernNotesSection";
+import { ConflictBanner } from "./ConflictBanner";
+import { Sprout, ForestSprite, LeafSprig } from "@/components/verdant/art";
+import { SectionTitle } from "@/components/verdant/SectionTitle";
+import { StarRating } from "@/components/verdant/StarRating";
+import { AiPlanDisclosure } from "@/components/verdant/AiPlanDisclosure";
+import { displayTitle, phaseForWeek } from "@/lib/phase";
 
-export default async function PlanPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function PlanPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
   const s = await auth();
   if (!s?.user?.id) {
     redirect("/login");
   }
   const { id } = await params;
-  const plan = await prisma.learningPlan.findFirst({
-    where: { id, userId: s.user.id },
+  const state = await loadPlanState({
+    planId: id,
+    userId: s.user.id,
+    accessToken: s.accessToken,
   });
-  if (!plan) {
+  if (!state) {
     notFound();
   }
+  const { plan, schedule, completions, conflicts } = state;
   const sprout: SproutPlan = JSON.parse(plan.planJson) as SproutPlan;
-  const schedule: ScheduledSession[] = JSON.parse(
-    plan.scheduleJson || "[]"
-  ) as ScheduledSession[];
-  const recs: string[] = JSON.parse(
-    plan.recommendations || "[]"
-  ) as string[];
-  const completions = await prisma.taskCompletion.findMany({ where: { planId: id } });
-  const done = new Set(completions.filter((c) => c.completed).map((c) => c.taskId));
+  const recs: string[] = JSON.parse(plan.recommendations || "[]") as string[];
+  const done = new Set(
+    completions.filter((c) => c.completed).map((c) => c.taskId)
+  );
   const effByTask = Object.fromEntries(
     completions.map((c) => [c.taskId, c.effectiveness])
   ) as Record<string, number | null | undefined>;
 
+  const totalTasks = sprout.tasks?.length || schedule.length || 1;
+  const doneCount = sprout.tasks?.filter((t) => done.has(t.id)).length || 0;
+  const growth = Math.max(0.05, Math.min(1, doneCount / totalTasks));
+
+  const now = new Date();
+  const daysToBloom = Math.max(
+    0,
+    differenceInCalendarDays(new Date(plan.deadline), now)
+  );
+
+  const phases = sprout.phases || [];
+  const phaseTaskCounts = phases.map((_, idx) => {
+    const phaseTasks = (sprout.tasks || []).filter(
+      (t) => phaseForWeek(t.weekIndex, phases.length) === idx
+    );
+    const phaseDone = phaseTasks.filter((t) => done.has(t.id)).length;
+    return { total: phaseTasks.length, done: phaseDone };
+  });
+  const activePhase = (() => {
+    const i = phaseTaskCounts.findIndex(
+      (p) => p.done < p.total && p.total > 0
+    );
+    return i === -1 ? Math.max(0, phaseTaskCounts.length - 1) : i;
+  })();
+
+  const upcoming = schedule
+    .filter((row) => parseISO(row.end) >= now)
+    .sort((a, b) => +parseISO(a.start) - +parseISO(b.start));
+  const completedSessions = schedule
+    .filter((row) => parseISO(row.end) < now)
+    .sort((a, b) => +parseISO(b.start) - +parseISO(a.start));
+
+  const initialResources: string[] = JSON.parse(
+    plan.initialResources || "[]"
+  ) as string[];
+
+  // Fern's notes — persisted on LearningPlan, AI-authored.
+  // The client component below auto-generates the first batch on view.
+  const fernNotes = JSON.parse(plan.fernNotes || "[]") as FernNote[];
+
   return (
     <Shell>
-      <div className="space-y-8">
-        <div>
-          <h1 className="text-2xl font-semibold">{plan.title}</h1>
-          <p className="mt-1 text-sm text-[var(--muted)]">{sprout.summary}</p>
+      <div style={{ padding: "12px 36px 60px" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            marginBottom: 14,
+            fontFamily: "var(--font-jetbrains)",
+            fontSize: 12,
+            color: "var(--ink-faded)",
+          }}
+        >
+          <Link
+            href="/dashboard"
+            style={{ color: "inherit", textDecoration: "underline" }}
+          >
+            my garden
+          </Link>
+          <span>/</span>
+          <span>{plan.title}</span>
         </div>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div className="rounded-xl border border-[var(--border)] bg-[var(--card)]/50 p-4 text-sm">
-            <p className="text-[var(--muted)]">Deadline</p>
-            <p className="mt-1 text-lg">
-              {format(new Date(plan.deadline), "PPP")}
-            </p>
-          </div>
-          <div className="rounded-xl border border-[var(--border)] bg-[var(--card)]/50 p-4 text-sm">
-            <p className="text-[var(--muted)]">Resources you gave</p>
-            <p className="mt-1">
-              {JSON.parse(plan.initialResources || "[]").length + " links or notes"}
-            </p>
-          </div>
-        </div>
-        {recs.length > 0 && (
-          <div>
-            <h2 className="text-sm font-medium text-sprout-200/90">Suggested next resources</h2>
-            <ul className="mt-2 list-disc pl-5 text-sm text-[var(--muted)]">
-              {recs.map((r) => (
-                <li key={r}>{r}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-        <div>
-          <h2 className="text-sm font-medium text-sprout-200/90">Scheduled sessions</h2>
-          <ul className="mt-2 space-y-1">
-            {schedule.map((row) => {
-              const lines =
-                row.agenda && row.agenda.length > 0
-                  ? row.agenda.map((a) => ({
-                      taskId: a.planTaskId,
-                      title: a.title,
-                      type: a.type,
-                      completed: done.has(a.planTaskId),
-                      initialEffectiveness: effByTask[a.planTaskId] ?? null,
-                    }))
-                  : [
-                      {
-                        taskId: row.planTaskId,
-                        title: row.title,
-                        type: row.type,
-                        completed: done.has(row.planTaskId),
-                        initialEffectiveness: effByTask[row.planTaskId] ?? null,
-                      },
-                    ];
-              return (
-                <li key={row.id}>
-                  <SessionRow
-                    planId={id}
-                    sessionTitle={row.title}
-                    start={row.start}
-                    lines={lines}
-                    onCalendar={Boolean(row.googleSynced)}
+
+        <div className="journal-edge" style={{ padding: 32, position: "relative" }}>
+          <div
+            className="tape"
+            style={{ left: 32, top: -10, transform: "rotate(-4deg)" }}
+          />
+          <div
+            className="tape"
+            style={{ right: 60, top: -10, transform: "rotate(3deg)" }}
+          />
+
+          {/* hero */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "240px 1fr 220px",
+              gap: 32,
+              alignItems: "center",
+              marginBottom: 24,
+            }}
+          >
+            <div
+              style={{
+                background:
+                  "linear-gradient(180deg, var(--sky-soft) 0%, var(--paper-warm) 70%)",
+                border: "1.5px solid var(--ink)",
+                borderRadius: 16,
+                padding: 18,
+                position: "relative",
+                height: 220,
+              }}
+            >
+              <div style={{ display: "grid", placeItems: "center", height: "100%" }}>
+                <div className="sway">
+                  <Sprout
+                    size={170}
+                    growth={growth}
+                    mood={growth < 0.2 ? "sleepy" : "happy"}
                   />
-                </li>
-              );
-            })}
-          </ul>
+                </div>
+              </div>
+              <div
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  height: 16,
+                  background: "var(--soil)",
+                  borderTop: "1.5px solid var(--ink)",
+                  borderRadius: "0 0 14px 14px",
+                }}
+              />
+            </div>
+            <div>
+              <div className="tag" style={{ marginBottom: 6 }}>
+                sprout · started {format(new Date(plan.createdAt), "MMM d")}
+              </div>
+              <h1
+                className="serif-display"
+                style={{
+                  fontSize: 48,
+                  margin: "0 0 8px",
+                  fontWeight: 400,
+                  letterSpacing: "-0.01em",
+                }}
+              >
+                {plan.title}
+              </h1>
+              <p
+                style={{
+                  fontSize: 17,
+                  color: "var(--ink-soft)",
+                  lineHeight: 1.5,
+                  margin: "0 0 14px",
+                  maxWidth: 560,
+                }}
+              >
+                {sprout.summary}
+              </p>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <span className="chip moss">{Math.round(growth * 100)}% grown</span>
+                <span className="chip">{daysToBloom} days to bloom</span>
+                <span className="chip">
+                  {doneCount} of {totalTasks} sessions
+                </span>
+                <span className="chip sun">
+                  due {format(new Date(plan.deadline), "MMM d")}
+                </span>
+              </div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <Link href="/plan/new" className="btn primary">
+                + new sprout
+              </Link>
+              <Link href="/settings" className="btn">
+                tend the soil
+              </Link>
+              <DeleteSproutButton planId={id} title={plan.title} />
+            </div>
+          </div>
+
+          {/* AI plan response — toggle dropdown with click-through tabs */}
+          <AiPlanDisclosure sprout={sprout} />
+
+          {/* FERN'S NOTES — AI-authored, persisted, lazy-generated on first view */}
+          <FernNotesSection
+            planId={id}
+            initialNotes={fernNotes}
+            initialGeneratedAt={
+              plan.fernNotesGeneratedAt
+                ? plan.fernNotesGeneratedAt.toISOString()
+                : null
+            }
+          />
+
+          {/* phase trail */}
+          {phases.length > 0 && (
+            <div style={{ marginBottom: 28 }}>
+              <SectionTitle kicker="growth phases">The trail to bloom</SectionTitle>
+              <div style={{ position: "relative", paddingTop: 16 }}>
+                <svg
+                  style={{
+                    position: "absolute",
+                    top: 28,
+                    left: 40,
+                    right: 40,
+                    width: "calc(100% - 80px)",
+                    height: 8,
+                    zIndex: 0,
+                  }}
+                  preserveAspectRatio="none"
+                  viewBox="0 0 1000 8"
+                >
+                  <path
+                    d="M0 4 Q 250 -2, 500 4 T 1000 4"
+                    stroke="var(--moss)"
+                    strokeWidth="2.5"
+                    strokeDasharray="6 6"
+                    fill="none"
+                  />
+                </svg>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: `repeat(${phases.length}, 1fr)`,
+                    gap: 16,
+                    position: "relative",
+                    zIndex: 1,
+                  }}
+                >
+                  {phases.map((p, i) => {
+                    const phaseDone =
+                      phaseTaskCounts[i].done >= phaseTaskCounts[i].total &&
+                      phaseTaskCounts[i].total > 0;
+                    const isActive = i === activePhase && !phaseDone;
+                    return (
+                      <div
+                        key={i}
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          alignItems: "center",
+                          gap: 8,
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: 56,
+                            height: 56,
+                            borderRadius: "50%",
+                            background: phaseDone
+                              ? "var(--moss)"
+                              : isActive
+                                ? "var(--sun)"
+                                : "var(--paper-warm)",
+                            border: "1.5px solid var(--ink)",
+                            display: "grid",
+                            placeItems: "center",
+                            boxShadow: "2px 2px 0 var(--ink)",
+                          }}
+                        >
+                          {phaseDone ? (
+                            <span style={{ color: "#f8f1de", fontSize: 24 }}>
+                              ✓
+                            </span>
+                          ) : isActive ? (
+                            <Sprout size={42} growth={0.5} />
+                          ) : (
+                            <span
+                              style={{
+                                fontFamily: "var(--font-fraunces)",
+                                fontWeight: 600,
+                                fontSize: 18,
+                              }}
+                            >
+                              {i + 1}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ textAlign: "center" }}>
+                          <div
+                            style={{
+                              fontFamily: "var(--font-fraunces)",
+                              fontWeight: 500,
+                              fontSize: 16,
+                            }}
+                          >
+                            {p.name}
+                          </div>
+                          <div
+                            style={{
+                              fontFamily: "var(--font-fraunces)",
+                              fontStyle: "italic",
+                              fontSize: 13,
+                              color: "var(--ink-faded)",
+                              lineHeight: 1.3,
+                              marginTop: 2,
+                              maxWidth: 200,
+                            }}
+                          >
+                            {p.focus}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1.4fr 1fr",
+              gap: 28,
+            }}
+          >
+            <div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  justifyContent: "space-between",
+                  marginBottom: 10,
+                }}
+              >
+                <h3
+                  className="serif-display"
+                  style={{ fontSize: 24, margin: 0, fontWeight: 500 }}
+                >
+                  The road ahead
+                </h3>
+                <span
+                  style={{
+                    fontFamily: "var(--font-jetbrains)",
+                    fontSize: 11,
+                    color: "var(--ink-faded)",
+                  }}
+                >
+                  {upcoming.length} upcoming · click to open
+                </span>
+              </div>
+              {upcoming.length === 0 ? (
+                <div
+                  className="dotted"
+                  style={{
+                    padding: 24,
+                    textAlign: "center",
+                    color: "var(--ink-faded)",
+                    fontFamily: "var(--font-fraunces)",
+                    fontStyle: "italic",
+                  }}
+                >
+                  no sessions ahead. ask Fern to rebalance below.
+                </div>
+              ) : (
+                <ul
+                  style={{
+                    listStyle: "none",
+                    padding: 0,
+                    margin: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 8,
+                  }}
+                >
+                  {upcoming.map((row) => {
+                    // For multi-task agendas, use the first task as the navigation target.
+                    const taskId =
+                      row.agenda && row.agenda.length > 0
+                        ? row.agenda[0].planTaskId
+                        : row.planTaskId;
+                    const eff = effByTask[taskId] ?? 0;
+                    const isDone = done.has(taskId);
+                    return (
+                      <li key={row.id}>
+                        <RoadAheadRow
+                          href={`/plan/${id}/session/${taskId}`}
+                          title={row.title}
+                          type={row.type}
+                          start={row.start}
+                          rating={eff || 0}
+                          done={isDone}
+                        />
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+
+              <ConflictBanner
+                planId={id}
+                conflicts={conflicts.lockedConflicts.map((c) => ({
+                  sessionId: c.session.id,
+                  sessionTitle: c.session.title,
+                  sessionStart: c.session.start,
+                  sessionEnd: c.session.end,
+                  overlappingCount: c.overlapping.length,
+                }))}
+              />
+              <PlanActions planId={id} hasPrevPlan={!!plan.planJsonPrev} />
+            </div>
+
+            <div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  justifyContent: "space-between",
+                  marginBottom: 10,
+                }}
+              >
+                <h3
+                  className="serif-display"
+                  style={{ fontSize: 24, margin: 0, fontWeight: 500 }}
+                >
+                  The journal so far
+                </h3>
+                <span
+                  style={{
+                    fontFamily: "var(--font-jetbrains)",
+                    fontSize: 11,
+                    color: "var(--ink-faded)",
+                  }}
+                >
+                  {completedSessions.length} entries · scroll
+                </span>
+              </div>
+              <div
+                className="ink-card soft scroll-area"
+                style={{
+                  padding: "6px 14px",
+                  background: "var(--paper)",
+                  maxHeight: 360,
+                  overflowY: "auto",
+                  backgroundImage:
+                    "repeating-linear-gradient(0deg, transparent 0, transparent 36px, rgba(43,36,24,0.04) 36px, rgba(43,36,24,0.04) 37px)",
+                }}
+              >
+                {completedSessions.length === 0 ? (
+                  <p
+                    style={{
+                      fontFamily: "var(--font-fraunces)",
+                      fontStyle: "italic",
+                      color: "var(--ink-faded)",
+                      margin: "16px 0",
+                      fontSize: 14,
+                    }}
+                  >
+                    nothing tended yet — your first entry will land here.
+                  </p>
+                ) : (
+                  completedSessions.map((row, i, arr) => {
+                    const taskId =
+                      row.agenda && row.agenda.length > 0
+                        ? row.agenda[0].planTaskId
+                        : row.planTaskId;
+                    const eff = effByTask[taskId] ?? 0;
+                    return (
+                      <Link
+                        key={row.id}
+                        href={`/plan/${id}/journal/${taskId}`}
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "60px 1fr auto 14px",
+                          gap: 10,
+                          alignItems: "center",
+                          padding: "10px 0",
+                          borderBottom:
+                            i < arr.length - 1
+                              ? "1.25px dashed var(--ink-soft)"
+                              : "none",
+                          textDecoration: "none",
+                          color: "inherit",
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontFamily: "var(--font-jetbrains)",
+                            fontSize: 11,
+                            color: "var(--ink-faded)",
+                          }}
+                        >
+                          {format(parseISO(row.start), "MMM d")}
+                        </div>
+                        <div
+                          style={{
+                            fontFamily: "var(--font-fraunces)",
+                            fontSize: 15,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {displayTitle(row.title, row.type)}
+                        </div>
+                        <StarRating value={eff || 0} size={16} />
+                        <span
+                          style={{
+                            color: "var(--ink-faded)",
+                            fontSize: 14,
+                          }}
+                        >
+                          ›
+                        </span>
+                      </Link>
+                    );
+                  })
+                )}
+              </div>
+
+              {initialResources.length > 0 && (
+                <>
+                  <h3
+                    className="serif-display"
+                    style={{ fontSize: 22, margin: "22px 0 10px", fontWeight: 500 }}
+                  >
+                    Sprigs you brought
+                  </h3>
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 8,
+                    }}
+                  >
+                    {initialResources.map((r, i) => (
+                      <div
+                        key={i}
+                        className="ink-card soft"
+                        style={{
+                          padding: "10px 12px",
+                          display: "flex",
+                          gap: 10,
+                          alignItems: "center",
+                        }}
+                      >
+                        <LeafSprig size={36} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div
+                            style={{
+                              fontWeight: 500,
+                              fontSize: 14,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {r}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {recs.length > 0 && (
+                <div
+                  className="ink-card"
+                  style={{
+                    padding: 16,
+                    marginTop: 22,
+                    background: "var(--leaf-pale)",
+                    position: "relative",
+                  }}
+                >
+                  <div style={{ position: "absolute", left: -10, top: -16 }}>
+                    <ForestSprite size={56} />
+                  </div>
+                  <div style={{ paddingLeft: 50 }}>
+                    <div className="tag" style={{ marginBottom: 4 }}>
+                      fern&apos;s suggested resources
+                    </div>
+                    <ul
+                      style={{
+                        margin: 0,
+                        paddingLeft: 18,
+                        fontFamily: "var(--font-fraunces)",
+                        fontSize: 14,
+                        lineHeight: 1.5,
+                        color: "var(--ink)",
+                      }}
+                    >
+                      {recs.map((r) => (
+                        <li key={r}>{r}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
-        <PlanActions planId={id} />
       </div>
     </Shell>
   );
 }
+

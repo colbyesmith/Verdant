@@ -1,7 +1,13 @@
 import OpenAI from "openai";
 import { z } from "zod";
-import type { SproutPlan, TaskType } from "@/types/plan";
+import type { SproutPlan } from "@/types/plan";
 import { buildId } from "./ids";
+import {
+  SPROUT_PLAN_MODEL,
+  SPROUT_PLAN_SYSTEM,
+  SPROUT_PLAN_TEMPERATURE,
+  buildSproutPlanUserPrompt,
+} from "@/prompts/sprout-plan";
 
 const planSchema = z.object({
   summary: z.string(),
@@ -9,20 +15,38 @@ const planSchema = z.object({
   tasks: z.array(
     z.object({
       id: z.string().optional(),
-      title: z.string(),
+      title: z.string().transform((s) => s.trim()),
       type: z.enum(["lesson", "review", "milestone"]),
       minutes: z.number().min(5).max(120),
       weekIndex: z.number().min(0),
       dayOffsetInWeek: z.number().min(0).max(6),
-      description: z.string().optional(),
-      resourceRef: z.string().optional(),
+      description: z
+        .string()
+        .optional()
+        .transform((s) => (s ? s.trim() : s)),
+      resourceRef: z
+        .string()
+        .optional()
+        .transform((s) => (s ? s.trim() : s)),
+      preferredTimeOfDay: z
+        .enum(["morning", "afternoon", "evening", "any"])
+        .optional(),
+      mustFollowTaskId: z.string().optional(),
+      minDaysAfterPredecessor: z.number().int().min(0).max(60).optional(),
+      preferStandalone: z.boolean().optional(),
+      priority: z.enum(["core", "stretch"]).optional(),
     })
   ),
+  rationale: z.array(z.string()).optional(),
+  weeklyShape: z
+    .object({
+      lessons: z.coerce.number(),
+      reviews: z.coerce.number(),
+      milestoneEvery: z.string(),
+    })
+    .optional(),
+  sessionsPlanned: z.coerce.number().optional(),
 });
-
-const SYSTEM = `You are Verdant, a learning plan designer. Output only valid JSON matching the schema. 
-Create a "sprout" plan: tasks must be one of: lesson (intro/drill), review (spaced reinforcement), milestone (check progress).
-Use realistic time estimates. Spread across weeks before the deadline.`;
 
 function fallbackPlan(
   targetSkill: string,
@@ -77,14 +101,27 @@ function fallbackPlan(
       { name: "Build", focus: "Deeper practice" },
     ].slice(0, Math.min(2, w)),
     tasks,
+    rationale: [
+      "Template fallback (no OPENAI_API_KEY): a fixed weekly cadence of 2 lessons + 1 review (after week 0) + 1 weekly milestone.",
+      "Reviews start in week 1 so there is prior material to reinforce.",
+      "Milestones cap each week to give a tangible check-in; swap for phase-end gates with a real generator.",
+    ],
+    weeklyShape: { lessons: 2, reviews: 1, milestoneEvery: "week" },
+    sessionsPlanned: tasks.length,
   };
 }
 
-export async function generateSproutPlan(input: {
+export async function generatePlanWithAI(input: {
   targetSkill: string;
   deadline: Date;
   startDate: Date;
   initialResources: string[];
+  /** Optional: availability summary (design Q3) — included in the LLM prompt. */
+  availability?: import("./availability-summary").AvailabilitySummary;
+  /** Optional: user's weekly minutes target (design Q4 α). */
+  weeklyMinutesTarget?: number | null;
+  /** Optional: freeform note (design Q4 δ), pasted verbatim into the prompt. */
+  freeformNote?: string | null;
 }): Promise<SproutPlan> {
   const days = Math.max(
     1,
@@ -100,34 +137,24 @@ export async function generateSproutPlan(input: {
   }
 
   const openai = new OpenAI({ apiKey: key });
-  const userContent = JSON.stringify({
+  const userContent = buildSproutPlanUserPrompt({
     targetSkill: input.targetSkill,
     startDate: input.startDate.toISOString().slice(0, 10),
     deadline: input.deadline.toISOString().slice(0, 10),
     weeks,
     initialResources: input.initialResources,
-    requiredJsonShape: {
-      summary: "string",
-      phases: [{ name: "string", focus: "string" }],
-      tasks: [
-        {
-          title: "string",
-          type: "lesson | review | milestone",
-          minutes: "number 15-90",
-          weekIndex: "0..weeks-1",
-          dayOffsetInWeek: "0-6",
-        },
-      ],
-    },
+    availability: input.availability,
+    weeklyMinutesTarget: input.weeklyMinutesTarget,
+    freeformNote: input.freeformNote,
   });
 
   try {
     const res = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      temperature: 0.4,
+      model: SPROUT_PLAN_MODEL,
+      temperature: SPROUT_PLAN_TEMPERATURE,
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: SYSTEM },
+        { role: "system", content: SPROUT_PLAN_SYSTEM },
         { role: "user", content: userContent },
       ],
     });
@@ -137,15 +164,34 @@ export async function generateSproutPlan(input: {
     return {
       summary: parsed.summary,
       phases: parsed.phases,
-      tasks: parsed.tasks.map((t, i) => ({
-        ...t,
-        id: t.id ?? buildId("t", String(i), t.title.slice(0, 8)),
-      })),
+      tasks: parsed.tasks.map((t, i) => {
+        const safeTitle =
+          t.title ||
+          (t.type === "milestone"
+            ? `Milestone ${i + 1}`
+            : t.type === "review"
+              ? `Review ${i + 1}`
+              : `Lesson ${i + 1}`);
+        return {
+          ...t,
+          title: safeTitle,
+          id: t.id ?? buildId("t", String(i), safeTitle.slice(0, 8)),
+        };
+      }),
+      rationale: parsed.rationale,
+      weeklyShape: parsed.weeklyShape,
+      sessionsPlanned: parsed.sessionsPlanned ?? parsed.tasks.length,
     };
-  } catch {
+  } catch (err) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("[generatePlanWithAI] failing back to template:", err);
+    }
     return fallbackPlan(input.targetSkill, input.initialResources, weeks);
   }
 }
+
+/** Backwards-compatible alias — old call sites use this name. */
+export const generateSproutPlan = generatePlanWithAI;
 
 export function supplementalResources(targetSkill: string): string[] {
   return [

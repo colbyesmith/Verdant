@@ -1,42 +1,42 @@
-import Link from "next/link";
 import { auth } from "@/auth";
+import { PrimaryNav } from "./verdant/PrimaryNav";
+import { PlantHelper } from "./verdant/PlantHelper";
+import { FooterStrip } from "./verdant/FooterStrip";
 import { SignOutButton } from "./SignOutButton";
 
-export async function Shell({ children }: { children: React.ReactNode }) {
+export async function Shell({
+  children,
+  showHelper = true,
+  showFooter = true,
+}: {
+  children: React.ReactNode;
+  showHelper?: boolean;
+  showFooter?: boolean;
+}) {
   const session = await auth();
+  const user = session?.user
+    ? { name: session.user.name, email: session.user.email, image: session.user.image }
+    : null;
+  const signedIn = Boolean(session);
   return (
-    <div className="min-h-dvh">
-      <header className="border-b border-[var(--border)] bg-[var(--card)]/50 backdrop-blur">
-        <div className="mx-auto flex h-14 max-w-4xl items-center justify-between px-4">
-          <Link href={session ? "/dashboard" : "/"} className="text-lg font-semibold tracking-tight text-sprout-200">
-            Verdant
-          </Link>
-          <nav className="flex items-center gap-4 text-sm text-[var(--muted)]">
-            {session ? (
-              <>
-                <Link href="/dashboard" className="hover:text-sprout-200">
-                  Dashboard
-                </Link>
-                <Link href="/plan/new" className="hover:text-sprout-200">
-                  New sprout
-                </Link>
-                <Link href="/settings" className="hover:text-sprout-200">
-                  Settings
-                </Link>
-                <SignOutButton />
-              </>
-            ) : (
-              <Link
-                href="/login"
-                className="rounded-lg bg-sprout-600 px-3 py-1.5 text-white hover:bg-sprout-500"
-              >
-                Sign in
-              </Link>
-            )}
-          </nav>
+    <div className="app-frame">
+      <PrimaryNav signedIn={signedIn} user={user} />
+      <main>{children}</main>
+      {signedIn && showFooter && <FooterStrip />}
+      {signedIn && (
+        <div
+          style={{
+            textAlign: "center",
+            padding: "16px 0 32px",
+            fontFamily: "var(--font-jetbrains)",
+            fontSize: 11,
+            color: "var(--ink-faded)",
+          }}
+        >
+          <SignOutButton />
         </div>
-      </header>
-      <main className="mx-auto max-w-4xl px-4 py-8">{children}</main>
+      )}
+      {signedIn && showHelper && <PlantHelper />}
     </div>
   );
 }
