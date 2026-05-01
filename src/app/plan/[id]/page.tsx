@@ -385,16 +385,28 @@ export default async function PlanPage({
                   no sessions ahead. ask Fern to rebalance below.
                 </div>
               ) : (
-                <ul
+                <div
                   style={{
-                    listStyle: "none",
-                    padding: 0,
-                    margin: 0,
                     display: "flex",
                     flexDirection: "column",
                     gap: 8,
+                    position: "relative",
                   }}
                 >
+                  {/* dashed moss vine running down the timeline */}
+                  <div
+                    aria-hidden
+                    style={{
+                      position: "absolute",
+                      left: 22,
+                      top: 30,
+                      bottom: 30,
+                      width: 0,
+                      borderLeft: "2.5px dashed var(--moss)",
+                      opacity: 0.5,
+                      zIndex: 0,
+                    }}
+                  />
                   {upcoming.map((row) => {
                     // For multi-task agendas, use the first task as the navigation target.
                     const taskId =
@@ -403,20 +415,57 @@ export default async function PlanPage({
                         : row.planTaskId;
                     const eff = effByTask[taskId] ?? 0;
                     const isDone = done.has(taskId);
+                    const startDate = parseISO(row.start);
                     return (
-                      <li key={row.id}>
-                        <RoadAheadRow
-                          href={`/plan/${id}/session/${taskId}`}
-                          title={row.title}
-                          type={row.type}
-                          start={row.start}
-                          rating={eff || 0}
-                          done={isDone}
-                        />
-                      </li>
+                      <Link
+                        key={row.id}
+                        href={`/plan/${id}/session/${taskId}`}
+                        style={{
+                          display: "flex",
+                          alignItems: "stretch",
+                          gap: 14,
+                          position: "relative",
+                          textDecoration: "none",
+                          color: "inherit",
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: 44,
+                            height: 44,
+                            borderRadius: "50%",
+                            background: "var(--paper-warm)",
+                            border: "1.5px solid var(--ink)",
+                            display: "grid",
+                            placeItems: "center",
+                            flexShrink: 0,
+                            zIndex: 2,
+                            fontFamily: "var(--font-jetbrains)",
+                            fontSize: 11,
+                            alignSelf: "center",
+                          }}
+                        >
+                          <div style={{ textAlign: "center", lineHeight: 1.1 }}>
+                            <div style={{ fontWeight: 600 }}>
+                              {format(startDate, "EEE")}
+                            </div>
+                            <div style={{ color: "var(--ink-faded)" }}>
+                              {format(startDate, "HH:mm")}
+                            </div>
+                          </div>
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <RoadAheadRow
+                            title={row.title}
+                            type={row.type}
+                            rating={eff || 0}
+                            done={isDone}
+                          />
+                        </div>
+                      </Link>
                     );
                   })}
-                </ul>
+                </div>
               )}
 
               <ConflictBanner

@@ -23,20 +23,33 @@ function toMinutes(t: string): number {
   return h * 60 + m;
 }
 
-function dayWindow(day: Date, timeWindows: TimeWindows): FreeInterval | null {
+function dayWindows(day: Date, timeWindows: TimeWindows): FreeInterval[] {
   const wd = String(getDay(startOfDay(day)));
-  const w = timeWindows[wd] ?? timeWindows[wd === "0" ? "7" : wd];
-  if (!w) return null;
-  const wStart = (w as { start: string; end: string }).start;
-  const wEnd = (w as { start: string; end: string }).end;
-  const sm = toMinutes(wStart);
-  const em = toMinutes(wEnd);
-  if (em <= sm) return null;
+  const list = timeWindows[wd] ?? timeWindows[wd === "0" ? "7" : wd];
+  if (!list || list.length === 0) return [];
   const sod = startOfDay(day);
-  return {
-    start: set(sod, { hours: Math.floor(sm / 60), minutes: sm % 60, seconds: 0, milliseconds: 0 }),
-    end: set(sod, { hours: Math.floor(em / 60), minutes: em % 60, seconds: 0, milliseconds: 0 }),
-  };
+  const out: FreeInterval[] = [];
+  for (const w of list) {
+    const sm = toMinutes(w.start);
+    const em = toMinutes(w.end);
+    if (em <= sm) continue;
+    out.push({
+      start: set(sod, {
+        hours: Math.floor(sm / 60),
+        minutes: sm % 60,
+        seconds: 0,
+        milliseconds: 0,
+      }),
+      end: set(sod, {
+        hours: Math.floor(em / 60),
+        minutes: em % 60,
+        seconds: 0,
+        milliseconds: 0,
+      }),
+    });
+  }
+  out.sort((a, b) => a.start.getTime() - b.start.getTime());
+  return out;
 }
 
 /**
@@ -79,16 +92,23 @@ function subtractBusy(
 }
 
 /**
- * Free sub-intervals for a single calendar day = (day's window) ∩ ¬busy.
+ * Free sub-intervals for a single calendar day = (day's windows) ∩ ¬busy.
+ * Each declared window contributes its own gaps; the resulting fragments are
+ * concatenated and returned in start-time order.
  */
 export function freeIntervalsForDay(
   day: Date,
   timeWindows: TimeWindows,
   busy: BusyInterval[]
 ): FreeInterval[] {
-  const w = dayWindow(day, timeWindows);
-  if (!w) return [];
-  return subtractBusy(w, busy);
+  const windows = dayWindows(day, timeWindows);
+  if (windows.length === 0) return [];
+  const out: FreeInterval[] = [];
+  for (const w of windows) {
+    out.push(...subtractBusy(w, busy));
+  }
+  out.sort((a, b) => a.start.getTime() - b.start.getTime());
+  return out;
 }
 
 /**

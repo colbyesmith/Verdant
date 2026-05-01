@@ -1,5 +1,3 @@
-import Link from "next/link";
-import { format, parseISO } from "date-fns";
 import type { TaskType } from "@/types/plan";
 import { Frog, Mushroom, Sprout } from "@/components/verdant/art";
 import { StarRating } from "@/components/verdant/StarRating";
@@ -17,50 +15,36 @@ function toneBg(type: TaskType) {
   return "var(--leaf-pale)";
 }
 
+/**
+ * Row content for one entry in the Road Ahead timeline. Designed to be wrapped
+ * by a Link in the parent so the whole timeline row (bubble + content) is
+ * clickable. The bubble + dashed vine layout lives in the parent.
+ */
 export function RoadAheadRow({
-  href,
   title,
   type,
-  start,
   rating = 0,
   done,
 }: {
-  href: string;
   title: string;
   type: TaskType;
-  start: string;
   rating?: number;
   done: boolean;
 }) {
-  const startDate = parseISO(start);
   return (
-    <Link
-      href={href}
+    <div
       className="ink-card soft"
       style={{
         display: "grid",
-        gridTemplateColumns: "44px 96px 1fr auto auto",
+        gridTemplateColumns: "44px 1fr auto auto",
         alignItems: "center",
         gap: 14,
         padding: "10px 14px",
         background: done ? "var(--paper-deep)" : "var(--paper-warm)",
         opacity: done ? 0.75 : 1,
-        textDecoration: "none",
-        color: "inherit",
       }}
     >
       <ToneCreature type={type} />
-      <div
-        style={{
-          fontFamily: "var(--font-jetbrains)",
-          fontSize: 12,
-          color: "var(--ink-faded)",
-          lineHeight: 1.2,
-        }}
-      >
-        <div>{format(startDate, "EEE")}</div>
-        <div>{format(startDate, "h:mm a")}</div>
-      </div>
       <div>
         <div
           style={{
@@ -81,6 +65,6 @@ export function RoadAheadRow({
       </div>
       <StarRating value={rating} size={16} />
       <span style={{ color: "var(--ink-faded)", fontSize: 16 }}>›</span>
-    </Link>
+    </div>
   );
 }

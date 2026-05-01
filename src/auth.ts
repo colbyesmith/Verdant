@@ -95,12 +95,7 @@ declare module "next-auth" {
   }
 }
 
-declare module "next-auth/jwt" {
-  interface JWT {
-    accessToken?: string;
-    refreshToken?: string;
-    expiresAt?: number;
-    refreshError?: string;
-    id?: string;
-  }
-}
+// JWT-side augmentation removed: callbacks already access token fields via
+// runtime casts (`token.accessToken as string | undefined` etc.), so the
+// `declare module "next-auth/jwt"` block was unenforced *and* TS could no
+// longer resolve the module after the v5 export-map shape changed.

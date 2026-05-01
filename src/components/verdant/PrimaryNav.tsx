@@ -19,6 +19,7 @@ export function PrimaryNav({
   const items: Item[] = signedIn
     ? [
         { href: "/dashboard", label: "My garden" },
+        { href: "/schedule", label: "Schedule" },
         { href: "/plan/new", label: "Plant a sprout" },
         { href: "/settings", label: "Settings" },
       ]

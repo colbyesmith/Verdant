@@ -1,8 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CalendarIcon, GoogleG, SunArt, WateringCan } from "@/components/verdant/art";
+import {
+  CalendarIcon,
+  GoogleG,
+  SunArt,
+  WateringCan,
+  Mushroom,
+} from "@/components/verdant/art";
+import { TimeWindowsHeatmap } from "@/components/verdant/TimeWindowsHeatmap";
+import { parseTimeWindowsJson } from "@/lib/default-preferences";
+import type { TimeWindows } from "@/types/plan";
 
 type Props = {
   maxMinutesDay: number;
@@ -13,6 +22,22 @@ type Props = {
   userEmail?: string | null;
 };
 
+const NUDGE_KEYS = ["morningBrief", "preSession", "weeklyReview"] as const;
+type NudgeKey = (typeof NUDGE_KEYS)[number];
+const NUDGE_LABELS: Record<NudgeKey, string> = {
+  morningBrief: "morning brief — what's on the plot today",
+  preSession: "10 min before each session",
+  weeklyReview: "sunday evening reflection",
+};
+const NUDGE_STORAGE_KEY = "verdant.nudges";
+
+function parseTimeWindows(raw: string, fallback: string): TimeWindows {
+  // Normalize-on-read so legacy `{start, end}` rows lift cleanly into the
+  // new `[{start, end}]` shape without a DB migration.
+  const parsed = parseTimeWindowsJson(raw && raw !== "{}" ? raw : fallback);
+  return parsed;
+}
+
 export function SettingsForm(p: Props) {
   const r = useRouter();
   const [max, setMax] = useState(p.maxMinutesDay);
@@ -20,25 +45,98 @@ export function SettingsForm(p: Props) {
     p.weeklyMinutesTarget != null ? String(p.weeklyMinutesTarget) : ""
   );
   const [cal, setCal] = useState(p.calendarConnected);
-  const [tw, setTw] = useState(
-    p.timeWindows && p.timeWindows !== "{}" ? p.timeWindows : p.defaultJson
+  const [tw, setTw] = useState<TimeWindows>(() =>
+    parseTimeWindows(p.timeWindows, p.defaultJson)
   );
+  const [nudges, setNudges] = useState<Record<NudgeKey, boolean>>({
+    morningBrief: true,
+    preSession: true,
+    weeklyReview: true,
+  });
   const [err, setErr] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [maxAutoSaved, setMaxAutoSaved] = useState<number | null>(null);
+  const [twAutoSavedAt, setTwAutoSavedAt] = useState<number | null>(null);
+
+  // Auto-save the daily-limit slider on release. Without this, dragging the
+  // slider only updates local state — leaving the page loses the change and
+  // the user sees the previously persisted value (which feels like a "reset").
+  async function saveMaxNow(value: number) {
+    try {
+      const res = await fetch("/api/preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxMinutesDay: value }),
+      });
+      if (res.ok) {
+        setMaxAutoSaved(value);
+        // Quick visual confirmation; clear after a short window so the
+        // indicator doesn't linger.
+        setTimeout(() => {
+          setMaxAutoSaved((cur) => (cur === value ? null : cur));
+        }, 1800);
+        r.refresh();
+      } else {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        setErr(j.error || "Couldn't save daily limit");
+      }
+    } catch {
+      setErr("Couldn't save daily limit");
+    }
+  }
+
+  // Auto-save the time-windows heatmap. The heatmap fires `onChange` once per
+  // committed gesture (single-cell toggle or rect drag-release), so this
+  // matches the slider's "save on release" cadence — no debounce needed.
+  async function saveTwNow(value: TimeWindows) {
+    try {
+      const res = await fetch("/api/preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ timeWindows: value }),
+      });
+      if (res.ok) {
+        const stamp = Date.now();
+        setTwAutoSavedAt(stamp);
+        setTimeout(() => {
+          setTwAutoSavedAt((cur) => (cur === stamp ? null : cur));
+        }, 1800);
+        r.refresh();
+      } else {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        setErr(j.error || "Couldn't save time windows");
+      }
+    } catch {
+      setErr("Couldn't save time windows");
+    }
+  }
+
+  // Nudges are decorative — persist locally so the toggle state survives reloads.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = window.localStorage.getItem(NUDGE_STORAGE_KEY);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as Partial<Record<NudgeKey, boolean>>;
+      setNudges((n) => ({ ...n, ...parsed }));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  function setNudge(k: NudgeKey, v: boolean): void {
+    const next = { ...nudges, [k]: v };
+    setNudges(next);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(NUDGE_STORAGE_KEY, JSON.stringify(next));
+    }
+  }
 
   async function save() {
     setBusy(true);
     setErr(null);
     setOk(false);
-    let parsed: Record<string, { start: string; end: string }>;
-    try {
-      parsed = JSON.parse(tw) as Record<string, { start: string; end: string }>;
-    } catch {
-      setErr("Time windows must be valid JSON");
-      setBusy(false);
-      return;
-    }
     const trimmed = weekly.trim();
     let weeklyMinutesTarget: number | null = null;
     if (trimmed.length > 0) {
@@ -57,7 +155,7 @@ export function SettingsForm(p: Props) {
         maxMinutesDay: max,
         weeklyMinutesTarget,
         calendarConnected: cal,
-        timeWindows: parsed,
+        timeWindows: tw,
       }),
     });
     if (!res.ok) {
@@ -72,6 +170,7 @@ export function SettingsForm(p: Props) {
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+      {/* Calendars */}
       <div className="ink-card" style={{ padding: 20 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
           <CalendarIcon size={28} />
@@ -129,6 +228,7 @@ export function SettingsForm(p: Props) {
         </label>
       </div>
 
+      {/* Daily limit */}
       <div className="ink-card" style={{ padding: 20 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
           <WateringCan size={36} />
@@ -152,9 +252,26 @@ export function SettingsForm(p: Props) {
             fontSize: 28,
             color: "var(--moss-deep)",
             textAlign: "center",
+            position: "relative",
           }}
         >
           {max} min/day
+          {maxAutoSaved === max && (
+            <span
+              style={{
+                position: "absolute",
+                right: 0,
+                top: "50%",
+                transform: "translateY(-50%)",
+                fontFamily: "var(--font-fraunces)",
+                fontStyle: "italic",
+                fontSize: 13,
+                color: "var(--moss)",
+              }}
+            >
+              saved ✓
+            </span>
+          )}
         </div>
         <input
           type="range"
@@ -163,14 +280,18 @@ export function SettingsForm(p: Props) {
           step={15}
           value={max}
           onChange={(e) => setMax(Number(e.target.value))}
+          onPointerUp={(e) => {
+            const v = Number((e.target as HTMLInputElement).value);
+            if (Number.isFinite(v)) void saveMaxNow(v);
+          }}
+          onKeyUp={(e) => {
+            // Keyboard adjustments (arrow keys) commit on key release.
+            const v = Number((e.target as HTMLInputElement).value);
+            if (Number.isFinite(v)) void saveMaxNow(v);
+          }}
           style={{ width: "100%", accentColor: "var(--moss)" }}
         />
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-          }}
-        >
+        <div style={{ display: "flex", justifyContent: "space-between" }}>
           <span className="tag">15 min</span>
           <span className="tag">3 hr</span>
         </div>
@@ -192,10 +313,18 @@ export function SettingsForm(p: Props) {
         </div>
       </div>
 
+      {/* Time windows heatmap */}
       <div className="ink-card" style={{ padding: 20, gridColumn: "span 2" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            marginBottom: 14,
+          }}
+        >
           <SunArt size={36} />
-          <div>
+          <div style={{ flex: 1 }}>
             <div className="tag">when can fern plant?</div>
             <div
               style={{
@@ -207,27 +336,119 @@ export function SettingsForm(p: Props) {
               Time windows
             </div>
           </div>
+          {twAutoSavedAt && (
+            <span
+              style={{
+                fontFamily: "var(--font-fraunces)",
+                fontStyle: "italic",
+                fontSize: 13,
+                color: "var(--moss)",
+              }}
+            >
+              saved ✓
+            </span>
+          )}
         </div>
-        <div className="field">
-          <label htmlFor="tw">JSON ({"{ Mon: [{ start, end }], … }"})</label>
-          <textarea
-            id="tw"
-            value={tw}
-            onChange={(e) => setTw(e.target.value)}
+        <TimeWindowsHeatmap
+          value={tw}
+          onChange={(next) => {
+            setTw(next);
+            void saveTwNow(next);
+          }}
+        />
+      </div>
+
+      {/* Gentle nudges */}
+      <div className="ink-card" style={{ padding: 20 }}>
+        <div className="tag">notifications</div>
+        <div
+          style={{
+            fontFamily: "var(--font-fraunces)",
+            fontSize: 18,
+            fontWeight: 600,
+            marginBottom: 12,
+          }}
+        >
+          Gentle nudges
+        </div>
+        {NUDGE_KEYS.map((k, i) => (
+          <label
+            key={k}
             style={{
-              minHeight: 220,
-              fontFamily: "var(--font-jetbrains)",
-              fontSize: 12,
-              lineHeight: 1.5,
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "8px 0",
+              borderBottom:
+                i < NUDGE_KEYS.length - 1
+                  ? "1.25px dashed var(--ink-soft)"
+                  : "none",
+              fontSize: 15,
             }}
-          />
-          <span className="hint">
-            keys are weekdays (Mon, Tue, …). fern only plants inside these windows.
-          </span>
+          >
+            <input
+              type="checkbox"
+              checked={nudges[k]}
+              onChange={(e) => setNudge(k, e.target.checked)}
+              style={{ width: 18, height: 18, accentColor: "var(--moss)" }}
+            />
+            <span>{NUDGE_LABELS[k]}</span>
+          </label>
+        ))}
+      </div>
+
+      {/* The compost */}
+      <div className="ink-card" style={{ padding: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+          <Mushroom size={28} />
+          <div className="tag">danger zone</div>
+        </div>
+        <div
+          style={{
+            fontFamily: "var(--font-fraunces)",
+            fontSize: 18,
+            fontWeight: 600,
+            marginBottom: 12,
+          }}
+        >
+          The compost
+        </div>
+        <p
+          style={{
+            fontSize: 14,
+            color: "var(--ink-soft)",
+            margin: "0 0 12px",
+            lineHeight: 1.45,
+          }}
+        >
+          Archive sprouts you&apos;ve finished, or pull them up entirely. We keep a
+          journal of completed ones in case you want to look back.
+        </p>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button type="button" className="btn sm" disabled title="coming soon">
+            view archive
+          </button>
+          <button
+            type="button"
+            className="btn sm"
+            style={{ background: "var(--blush)" }}
+            disabled
+            title="coming soon"
+          >
+            delete account
+          </button>
         </div>
       </div>
 
-      <div style={{ gridColumn: "span 2", display: "flex", gap: 12, alignItems: "center" }}>
+      {/* Save bar */}
+      <div
+        style={{
+          gridColumn: "span 2",
+          display: "flex",
+          gap: 12,
+          alignItems: "center",
+        }}
+      >
         <button
           type="button"
           onClick={save}

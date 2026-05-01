@@ -58,8 +58,13 @@ export interface TimeWindow {
   end: string; // "HH:mm"
 }
 
-/** weekday 0-6, Sunday=0 in JS; we also accept 1-7 in UI as Mon-Sun */
-export type TimeWindows = Record<string, { start: string; end: string } | TimeWindow | undefined>;
+/**
+ * Per-day list of allowed time windows. Keys are weekday indices using
+ * `Date.getDay()` semantics (Sun=0..Sat=6). Each day maps to zero or more
+ * non-overlapping `{start, end}` ranges; the heatmap UI lets users pick
+ * non-contiguous hours, which coalesce into the minimal set of ranges per day.
+ */
+export type TimeWindows = Record<string, TimeWindow[] | undefined>;
 
 export interface ScheduledSession {
   id: string;
