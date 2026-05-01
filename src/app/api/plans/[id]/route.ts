@@ -1,6 +1,9 @@
 import { auth } from "@/auth";
 import { smoothUpdate, slotKeyFromIso } from "@/lib/effectiveness";
-import { applyNaturalLanguageEdit } from "@/lib/nl-schedule";
+import {
+  applyNaturalLanguageEditSmart,
+  type HfNlDiagnostic,
+} from "@/lib/nl-schedule";
 import { prisma } from "@/lib/db";
 import { ensureUserPreferences } from "@/lib/user";
 import { rescheduleUncompleted } from "@/lib/time-windows";
@@ -99,6 +102,8 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   }
 
   let outSchedule = plan.scheduleJson;
+  let nlMessage: string | undefined;
+  let nlHf: HfNlDiagnostic | undefined;
   if (p.data.scheduleJson) {
     outSchedule = p.data.scheduleJson;
   }

@@ -26,11 +26,16 @@ export function PlanActions({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ naturalLanguage: text }),
     });
-    const j = (await res.json().catch(() => ({}))) as { error?: string; plan?: unknown };
+    const j = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      plan?: unknown;
+      message?: string;
+      hf?: HfDiag;
+    };
     if (!res.ok) {
-      setErr(j.error || "Could not apply edit");
+      setErr((j.error || "Could not apply edit") + formatHfNote(j.hf));
     } else {
-      setMessage("Updated.");
+      setMessage((j.message || "Updated.") + formatHfNote(j.hf));
       setText("");
       r.refresh();
     }
