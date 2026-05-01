@@ -10,7 +10,9 @@ import { parseBlackouts, blackoutsToBusy, type ManualBlackout } from "@/lib/blac
 import { interpretEdit } from "@/lib/edit-plan";
 import { applyEditOps } from "@/lib/apply-edit-ops";
 import { packWithScoring } from "@/lib/scoring-pack";
-import type { ScheduledSession, SproutPlan } from "@/types/plan";
+import { applyRating, projectReviewChain, type UiRating } from "@/lib/fsrs";
+import { reviewInstanceToTask } from "@/lib/fsrs-to-tasks";
+import type { PlanTask, ScheduledSession, SproutPlan } from "@/types/plan";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -39,7 +41,14 @@ const patch = z.object({
     .object({
       taskId: z.string(),
       completed: z.boolean().optional(),
-      effectiveness: z.number().min(1).max(5).optional(),
+      /** FSRS-aligned 4-button rating: 1=Again, 2=Hard, 4=Good, 5=Easy. */
+      rating: z
+        .number()
+        .int()
+        .refine((v) => v === 1 || v === 2 || v === 4 || v === 5, {
+          message: "rating must be one of 1, 2, 4, 5",
+        })
+        .optional(),
     })
     .optional(),
 });
@@ -279,38 +288,207 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   }
 
   if (p.data.taskFeedback) {
-    const { taskId, completed, effectiveness } = p.data.taskFeedback;
+    const { taskId, completed, rating } = p.data.taskFeedback;
     const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
     const sess = sessions.find(
       (x) =>
         x.planTaskId === taskId ||
         x.agenda?.some((a) => a.planTaskId === taskId)
     );
-    await prisma.taskCompletion.upsert({
-      where: { planId_taskId: { planId: id, taskId } },
-      create: {
-        planId: id,
-        taskId,
-        completed: completed ?? false,
-        completedAt: completed ? new Date() : null,
-        effectiveness: effectiveness ?? null,
-      },
-      update: {
-        ...(completed !== undefined
-          ? { completed, completedAt: completed ? new Date() : null }
-          : {}),
-        ...(effectiveness !== undefined ? { effectiveness } : {}),
-      },
+
+    // Branch: review tasks update FSRS state on the parent lesson and
+    // re-project the review chain. Lesson + milestone tasks use TaskCompletion.
+    const reviewInstance = await prisma.reviewInstance.findUnique({
+      where: { id: taskId },
+      include: { lessonState: true },
     });
-    if (effectiveness != null && sess) {
-      const key = slotKeyFromIso(sess.start);
-      const pref = await ensureUserPreferences(s.user.id);
-      const cur = JSON.parse(pref.slotEffectiveness || "{}") as Record<string, number>;
-      const next = JSON.stringify(smoothUpdate(cur, key, effectiveness));
-      await prisma.userPreference.update({
-        where: { userId: s.user.id },
-        data: { slotEffectiveness: next },
+
+    if (reviewInstance && reviewInstance.planId === id) {
+      const now = new Date();
+      const isCompleting = completed === true || rating != null;
+      // Persist this review's outcome.
+      await prisma.reviewInstance.update({
+        where: { id: reviewInstance.id },
+        data: {
+          projected: isCompleting ? false : reviewInstance.projected,
+          completedAt: isCompleting ? now : reviewInstance.completedAt,
+          rating: rating ?? reviewInstance.rating,
+        },
       });
+      // If a rating was provided, advance FSRS state and re-project the chain.
+      if (rating != null) {
+        const ls = reviewInstance.lessonState;
+        const { next, dueAt } = applyRating({
+          state: {
+            difficulty: ls.difficulty,
+            stability: ls.stability,
+            lastReview: ls.lastReview,
+            lapses: ls.lapses,
+          },
+          uiRating: rating as UiRating,
+          now,
+          intensity: plan.intensity,
+        });
+        await prisma.lessonState.update({
+          where: { id: ls.id },
+          data: {
+            difficulty: next.difficulty,
+            stability: next.stability,
+            lastReview: next.lastReview,
+            lapses: next.lapses,
+          },
+        });
+        // Drop future projected reviews for this lesson; re-project from new state.
+        await prisma.reviewInstance.deleteMany({
+          where: {
+            lessonStateId: ls.id,
+            projected: true,
+            dueAt: { gt: now },
+          },
+        });
+        // Anchor first re-projected step at the FSRS-recommended next due date.
+        const dueDates = projectReviewChain({
+          state: next,
+          // FSRS already gave us the *next* due; we use it as a synthetic "lessonEnd"
+          // shifted back by 1 day so projectReviewChain's first-review offset lands on dueAt.
+          lessonEnd: new Date(dueAt.getTime() - 86_400_000),
+          deadline: plan.deadline,
+          intensity: plan.intensity,
+          postDeadlineMode:
+            plan.postDeadlineMode === "maintain" ? "maintain" : "stop",
+        });
+        for (const due of dueDates) {
+          await prisma.reviewInstance.create({
+            data: {
+              planId: id,
+              lessonStateId: ls.id,
+              projected: true,
+              dueAt: due,
+            },
+          });
+        }
+        // Re-pack the calendar so new reviews get placed and old ones removed.
+        const pref = await ensureUserPreferences(s.user.id);
+        const tw = parseTimeWindowsJson(pref.timeWindows);
+        const slotEff = JSON.parse(pref.slotEffectiveness || "{}") as Record<
+          string,
+          number
+        >;
+        const calRead = await getBusyIntervals({
+          userId: s.user.id,
+          accessToken: s.accessToken,
+          from: now,
+          to: new Date(plan.deadline.getTime() + 864e5),
+        });
+        const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
+        const blackoutBusy = blackoutsToBusy(parseBlackouts(plan.manualBlackouts));
+        const sproutPlan = JSON.parse(plan.planJson || "{}") as SproutPlan;
+        const allReviews = await prisma.reviewInstance.findMany({
+          where: { planId: id, projected: true, dueAt: { gte: now } },
+          include: { lessonState: true },
+        });
+        const lessonTitles = new Map(
+          (sproutPlan.tasks ?? []).map((t) => [t.id, t.title] as const)
+        );
+        const reviewTasks = allReviews.map((r) =>
+          reviewInstanceToTask({
+            review: {
+              id: r.id,
+              planId: r.planId,
+              lessonStateId: r.lessonStateId,
+              projected: r.projected,
+              dueAt: r.dueAt,
+              completedAt: r.completedAt,
+              rating: r.rating,
+            },
+            lessonTitle: lessonTitles.get(r.lessonState.lessonId) ?? "lesson",
+          })
+        );
+        // Preserve locked future sessions; pack everything else.
+        const currentSessions = JSON.parse(
+          outSchedule || "[]"
+        ) as ScheduledSession[];
+        const lockedFuture = currentSessions.filter(
+          (sx) => new Date(sx.start) >= now && sx.locked
+        );
+        const placedTaskIds = new Set<string>();
+        for (const sx of lockedFuture) {
+          if (sx.agenda) for (const a of sx.agenda) placedTaskIds.add(a.planTaskId);
+          else placedTaskIds.add(sx.planTaskId);
+        }
+        const lessonAndMilestoneTasks: PlanTask[] = (sproutPlan.tasks ?? []).filter(
+          (t) => !placedTaskIds.has(t.id)
+        );
+        const reviewTasksToPack = reviewTasks.filter(
+          (t) => !placedTaskIds.has(t.id)
+        );
+        const lockedAsBusy = lockedFuture.map((sx) => ({
+          start: new Date(sx.start),
+          end: new Date(sx.end),
+          calendarEventId: sx.calendarEventId ?? `verdant-locked-${sx.id}`,
+          isVerdant: true,
+        }));
+        const result = packWithScoring(
+          [...lessonAndMilestoneTasks, ...reviewTasksToPack],
+          {
+            startDate: now,
+            deadline: new Date(plan.deadline.getTime() + 864e5),
+            timeWindows: tw,
+            busy: [...externalBusy, ...lockedAsBusy, ...blackoutBusy],
+            maxMinutesPerDay: pref.maxMinutesDay,
+            slotEffectiveness: slotEff,
+          }
+        );
+        const newSchedule = [...lockedFuture, ...result.schedule].sort(
+          (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
+        );
+        outSchedule = JSON.stringify(newSchedule);
+      }
+      // Update slot-effectiveness signal from the rating.
+      if (rating != null && sess) {
+        const key = slotKeyFromIso(sess.start);
+        const pref = await ensureUserPreferences(s.user.id);
+        const cur = JSON.parse(pref.slotEffectiveness || "{}") as Record<
+          string,
+          number
+        >;
+        const updated = JSON.stringify(smoothUpdate(cur, key, rating));
+        await prisma.userPreference.update({
+          where: { userId: s.user.id },
+          data: { slotEffectiveness: updated },
+        });
+      }
+    } else {
+      // Lesson or milestone — TaskCompletion path.
+      await prisma.taskCompletion.upsert({
+        where: { planId_taskId: { planId: id, taskId } },
+        create: {
+          planId: id,
+          taskId,
+          completed: completed ?? false,
+          completedAt: completed ? new Date() : null,
+          rating: rating ?? null,
+        },
+        update: {
+          ...(completed !== undefined
+            ? { completed, completedAt: completed ? new Date() : null }
+            : {}),
+          ...(rating !== undefined ? { rating } : {}),
+        },
+      });
+      if (rating != null && sess) {
+        const key = slotKeyFromIso(sess.start);
+        const pref = await ensureUserPreferences(s.user.id);
+        const cur = JSON.parse(pref.slotEffectiveness || "{}") as Record<
+          string,
+          number
+        >;
+        const next = JSON.stringify(smoothUpdate(cur, key, rating));
+        await prisma.userPreference.update({
+          where: { userId: s.user.id },
+          data: { slotEffectiveness: next },
+        });
+      }
     }
   }
 

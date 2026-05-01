@@ -187,6 +187,20 @@ function effectivenessScore(slot: Candidate, ctx: ScoringContext): number {
   return (ctx.slotEffectiveness[key] ?? 0) * 1.0;
 }
 
+/**
+ * Heavily-weighted soft preference for review tasks: prefer slots near
+ * the FSRS-recommended `dueAt`. Linear decay around the due date — same day
+ * is worth +30, one day off +23, a week off -19. Returns 0 for tasks
+ * without a `dueAt` so non-review tasks are unaffected.
+ */
+function dueAtProximityScore(task: PlanTask, slot: Candidate): number {
+  if (!task.dueAt) return 0;
+  const due = new Date(task.dueAt).getTime();
+  if (Number.isNaN(due)) return 0;
+  const deltaDays = Math.abs(slot.start.getTime() - due) / 86_400_000;
+  return Math.max(-30, 30 - deltaDays * 7);
+}
+
 function standaloneScore(
   task: PlanTask,
   slot: Candidate,
@@ -208,7 +222,8 @@ function scoreCandidate(
     idealWeekScore(task, slot, ctx) +
     idealDayScore(task, slot) +
     effectivenessScore(slot, ctx) +
-    standaloneScore(task, slot, dailyMinutesUsed)
+    standaloneScore(task, slot, dailyMinutesUsed) +
+    dueAtProximityScore(task, slot)
   );
 }
 

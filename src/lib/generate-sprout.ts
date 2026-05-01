@@ -75,16 +75,6 @@ function fallbackPlan(
       weekIndex: week,
       dayOffsetInWeek: 2,
     });
-    if (week > 0) {
-      tasks.push({
-        id: buildId("t", base, String(i++)),
-        title: `Review: prior ${targetSkill} material`,
-        type: "review",
-        minutes: 25,
-        weekIndex: week,
-        dayOffsetInWeek: 4,
-      });
-    }
     tasks.push({
       id: buildId("t", base, String(i++)),
       title: `Milestone: ${targetSkill} checkpoint`,
@@ -95,18 +85,18 @@ function fallbackPlan(
     });
   }
   return {
-    summary: `A structured path for ${targetSkill} over ${w} week(s), mixing lessons, reviews, and milestones.`,
+    summary: `A structured path for ${targetSkill} over ${w} week(s) of lessons and milestones.`,
     phases: [
       { name: "Foundations", focus: "Build routine and core skills" },
       { name: "Build", focus: "Deeper practice" },
     ].slice(0, Math.min(2, w)),
     tasks,
     rationale: [
-      "Template fallback (no OPENAI_API_KEY): a fixed weekly cadence of 2 lessons + 1 review (after week 0) + 1 weekly milestone.",
-      "Reviews start in week 1 so there is prior material to reinforce.",
+      "Template fallback (no OPENAI_API_KEY): a fixed weekly cadence of 2 lessons + 1 weekly milestone.",
+      "Reviews are added automatically by the spaced-repetition scheduler based on the lessons emitted here.",
       "Milestones cap each week to give a tangible check-in; swap for phase-end gates with a real generator.",
     ],
-    weeklyShape: { lessons: 2, reviews: 1, milestoneEvery: "week" },
+    weeklyShape: { lessons: 2, reviews: 0, milestoneEvery: "week" },
     sessionsPlanned: tasks.length,
   };
 }
@@ -161,17 +151,16 @@ export async function generatePlanWithAI(input: {
     const text = res.choices[0]?.message?.content;
     if (!text) return fallbackPlan(input.targetSkill, input.initialResources, weeks);
     const parsed = planSchema.parse(JSON.parse(text));
+    // Defensive: drop any review tasks the LLM emitted despite the prompt.
+    // Reviews are owned by FSRS — having the AI place them creates double-booking.
+    const nonReviewTasks = parsed.tasks.filter((t) => t.type !== "review");
     return {
       summary: parsed.summary,
       phases: parsed.phases,
-      tasks: parsed.tasks.map((t, i) => {
+      tasks: nonReviewTasks.map((t, i) => {
         const safeTitle =
           t.title ||
-          (t.type === "milestone"
-            ? `Milestone ${i + 1}`
-            : t.type === "review"
-              ? `Review ${i + 1}`
-              : `Lesson ${i + 1}`);
+          (t.type === "milestone" ? `Milestone ${i + 1}` : `Lesson ${i + 1}`);
         return {
           ...t,
           title: safeTitle,
@@ -180,7 +169,7 @@ export async function generatePlanWithAI(input: {
       }),
       rationale: parsed.rationale,
       weeklyShape: parsed.weeklyShape,
-      sessionsPlanned: parsed.sessionsPlanned ?? parsed.tasks.length,
+      sessionsPlanned: parsed.sessionsPlanned ?? nonReviewTasks.length,
     };
   } catch (err) {
     if (process.env.NODE_ENV !== "production") {

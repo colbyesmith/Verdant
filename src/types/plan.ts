@@ -28,6 +28,11 @@ export interface PlanTask {
   preferStandalone?: boolean;
   /** Drop-order signal: stretch tasks dropped first when overflow can't fit before deadline. */
   priority?: "core" | "stretch";
+  /**
+   * FSRS-recommended due date (review tasks only). Soft hint with a heavy weight in
+   * the scoring packer — closer to `dueAt` is much better than farther. ISO string.
+   */
+  dueAt?: string;
 }
 
 export interface SproutPlan {

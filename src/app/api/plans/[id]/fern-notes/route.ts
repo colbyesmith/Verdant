@@ -52,8 +52,8 @@ export async function POST(_: Request, { params }: RouteParams) {
   const totalTasks = sprout.tasks?.length ?? schedule.length ?? 0;
   const doneCount = completions.filter((c) => c.completed).length;
   const ratings = completions
-    .filter((c) => c.completed && typeof c.effectiveness === "number")
-    .map((c) => c.effectiveness as number);
+    .filter((c) => c.completed && typeof c.rating === "number")
+    .map((c) => c.rating as number);
   const averageRating =
     ratings.length === 0 ? null : ratings.reduce((a, b) => a + b, 0) / ratings.length;
   const daysToBloom = Math.max(
@@ -72,7 +72,7 @@ export async function POST(_: Request, { params }: RouteParams) {
     return {
       title: row.title,
       date: format(parseISO(row.start), "MMM d"),
-      rating: c?.effectiveness ?? null,
+      rating: c?.rating ?? null,
     };
   });
 

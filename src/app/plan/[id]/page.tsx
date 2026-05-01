@@ -41,7 +41,7 @@ export default async function PlanPage({
     completions.filter((c) => c.completed).map((c) => c.taskId)
   );
   const effByTask = Object.fromEntries(
-    completions.map((c) => [c.taskId, c.effectiveness])
+    completions.map((c) => [c.taskId, c.rating])
   ) as Record<string, number | null | undefined>;
 
   const totalTasks = sprout.tasks?.length || schedule.length || 1;

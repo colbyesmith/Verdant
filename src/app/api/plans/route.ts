@@ -6,7 +6,9 @@ import { ensureUserPreferences } from "@/lib/user";
 import { packWithScoring } from "@/lib/scoring-pack";
 import { getBusyIntervals } from "@/lib/calendar-read";
 import { summarizeAvailability } from "@/lib/availability-summary";
-import type { SproutPlan } from "@/types/plan";
+import { seedFsrsForPlan } from "@/lib/fsrs";
+import { reviewInstanceToTask } from "@/lib/fsrs-to-tasks";
+import type { PlanTask, ScheduledSession, SproutPlan } from "@/types/plan";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
 import { NextResponse, after } from "next/server";
 import { z } from "zod";
@@ -23,6 +25,10 @@ const createBody = z.object({
   initialResources: z.array(z.string().min(1)).min(0).max(20),
   freeformNote: z.string().max(2000).optional(),
   replaceActive: z.boolean().optional().default(true),
+  /** FSRS retention driver. 1=gentle (R=0.80), 2=steady (R=0.90), 3=focused (R=0.95). */
+  intensity: z.number().int().min(1).max(3).optional().default(2),
+  /** FSRS post-deadline behavior. */
+  postDeadlineMode: z.enum(["stop", "maintain"]).optional().default("stop"),
 });
 
 export async function GET() {
@@ -49,7 +55,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: parsed.error.message }, { status: 400 });
   }
 
-  const { targetSkill, initialResources, replaceActive, freeformNote } = parsed.data;
+  const {
+    targetSkill,
+    initialResources,
+    replaceActive,
+    freeformNote,
+    intensity,
+    postDeadlineMode,
+  } = parsed.data;
   const deadline = new Date(parsed.data.deadline);
   const startDate = parsed.data.startDate
     ? new Date(parsed.data.startDate)
@@ -150,7 +163,10 @@ export async function POST(request: Request) {
         });
         tick("generateSproutPlan", tLLM);
 
-        // Step 3: pack tasks into the calendar.
+        // Step 3: pack tasks into the calendar. Two passes: first packs the
+        // AI-emitted lessons + milestones to learn each lesson's end time, then
+        // FSRS projects review chains anchored to those ends, then we re-pack
+        // everything together so reviews land near their dueAt.
         send({
           type: "progress",
           step: 3,
@@ -158,17 +174,44 @@ export async function POST(request: Request) {
           label: "weaving sessions into your calendar",
         });
         const recs = supplementalResources(targetSkill);
-        const tPack = Date.now();
-        const packResult = packWithScoring(sprout.tasks, {
+        const ctx = {
           startDate,
           deadline,
           timeWindows,
           busy: externalBusy,
           maxMinutesPerDay: maxM,
           slotEffectiveness,
+        };
+        const tPack = Date.now();
+        // Pass 1: lessons + milestones only.
+        const pass1 = packWithScoring(sprout.tasks, ctx);
+        tick("packWithScoring(pass1)", tPack);
+
+        // Build a lessonId → end-of-session map from pass 1.
+        const lessonIds = sprout.tasks
+          .filter((t) => t.type === "lesson")
+          .map((t) => t.id);
+        const lessonEndByTaskId = new Map<string, Date>();
+        for (const sess of pass1.schedule) {
+          if (sess.agenda) {
+            for (const a of sess.agenda) {
+              if (lessonIds.includes(a.planTaskId)) {
+                lessonEndByTaskId.set(a.planTaskId, new Date(sess.end));
+              }
+            }
+          } else if (lessonIds.includes(sess.planTaskId)) {
+            lessonEndByTaskId.set(sess.planTaskId, new Date(sess.end));
+          }
+        }
+
+        // FSRS: seed LessonState defaults + project initial review chains.
+        const seeded = seedFsrsForPlan({
+          lessonTaskIds: lessonIds,
+          lessonEndByTaskId,
+          deadline,
+          intensity,
+          postDeadlineMode,
         });
-        tick("packWithScoring", tPack);
-        const schedule = packResult.schedule;
 
         // Step 4: persist. Calendar writes happen post-response via `after()`.
         send({
@@ -187,13 +230,84 @@ export async function POST(request: Request) {
             startDate,
             initialResources: JSON.stringify(initialResources),
             planJson: JSON.stringify(sprout),
-            scheduleJson: JSON.stringify(schedule),
+            // scheduleJson is filled below after pass 2.
+            scheduleJson: "[]",
             recommendations: JSON.stringify(recs),
             freeformNote: freeformNote ?? null,
+            intensity,
+            postDeadlineMode,
             status: "active",
           },
         });
-        tick("prisma.create", tDb);
+
+        // Persist LessonState rows (one per lesson task).
+        const lessonTitles = new Map(
+          sprout.tasks
+            .filter((t) => t.type === "lesson")
+            .map((t) => [t.id, t.title] as const)
+        );
+        const lessonStateIdByLessonId = new Map<string, string>();
+        for (const ls of seeded.lessonStates) {
+          const created = await prisma.lessonState.create({
+            data: {
+              planId: plan.id,
+              lessonId: ls.lessonId,
+              difficulty: ls.difficulty,
+              stability: ls.stability,
+              lapses: ls.lapses,
+            },
+          });
+          lessonStateIdByLessonId.set(ls.lessonId, created.id);
+        }
+
+        // Persist projected ReviewInstance rows.
+        const reviewRows: Array<{
+          id: string;
+          lessonStateId: string;
+          dueAt: Date;
+          lessonId: string;
+        }> = [];
+        for (const [lessonId, dueDates] of seeded.reviewsByLessonId) {
+          const lessonStateId = lessonStateIdByLessonId.get(lessonId);
+          if (!lessonStateId) continue;
+          for (const dueAt of dueDates) {
+            const created = await prisma.reviewInstance.create({
+              data: {
+                planId: plan.id,
+                lessonStateId,
+                projected: true,
+                dueAt,
+              },
+            });
+            reviewRows.push({ id: created.id, lessonStateId, dueAt, lessonId });
+          }
+        }
+
+        // Pass 2: re-pack everything (lessons + milestones + reviews-as-tasks).
+        const reviewTasks: PlanTask[] = reviewRows.map((r) =>
+          reviewInstanceToTask({
+            review: {
+              id: r.id,
+              planId: plan.id,
+              lessonStateId: r.lessonStateId,
+              projected: true,
+              dueAt: r.dueAt,
+              completedAt: null,
+              rating: null,
+            },
+            lessonTitle: lessonTitles.get(r.lessonId) ?? "lesson",
+          })
+        );
+        const allTasks: PlanTask[] = [...sprout.tasks, ...reviewTasks];
+        const pass2 = packWithScoring(allTasks, ctx);
+        tick("packWithScoring(pass2)", tPack);
+        const schedule: ScheduledSession[] = pass2.schedule;
+
+        await prisma.learningPlan.update({
+          where: { id: plan.id },
+          data: { scheduleJson: JSON.stringify(schedule) },
+        });
+        tick("prisma.create+seed", tDb);
         tick("total(before-response)", t0);
 
         // Singleton counter for the landing-page "sprouts in the ground"
@@ -219,7 +333,7 @@ export async function POST(request: Request) {
           sprout,
           schedule,
           recommendations: recs,
-          overflow: packResult.overflow.map((t) => ({
+          overflow: pass2.overflow.map((t) => ({
             id: t.id,
             title: t.title,
             priority: t.priority ?? "core",
