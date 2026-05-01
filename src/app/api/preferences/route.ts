@@ -7,6 +7,7 @@ import { z } from "zod";
 const patch = z.object({
   timeWindows: z.record(z.string(), z.object({ start: z.string(), end: z.string() })).optional(),
   maxMinutesDay: z.number().min(20).max(300).optional(),
+  weeklyMinutesTarget: z.number().int().min(30).max(3000).nullable().optional(),
   calendarConnected: z.boolean().optional(),
 });
 
@@ -39,12 +40,15 @@ export async function PATCH(request: Request) {
   if (!p.success) {
     return NextResponse.json({ error: p.error.message }, { status: 400 });
   }
-  const data: Record<string, string | number | boolean> = {};
+  const data: Record<string, string | number | boolean | null> = {};
   if (p.data.timeWindows) {
     data.timeWindows = JSON.stringify(p.data.timeWindows);
   }
   if (p.data.maxMinutesDay !== undefined) {
     data.maxMinutesDay = p.data.maxMinutesDay;
+  }
+  if (p.data.weeklyMinutesTarget !== undefined) {
+    data.weeklyMinutesTarget = p.data.weeklyMinutesTarget;
   }
   if (p.data.calendarConnected !== undefined) {
     data.calendarConnected = p.data.calendarConnected;

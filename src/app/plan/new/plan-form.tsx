@@ -19,6 +19,7 @@ export function NewPlanForm() {
   const [deadline, setDeadline] = useState("");
   const [resources, setResources] = useState<string[]>([""]);
   const [intensity, setIntensity] = useState(2);
+  const [freeformNote, setFreeformNote] = useState("");
   const [status, setStatus] = useState<"idle" | "saving" | "err">("idle");
   const [error, setError] = useState<string | null>(null);
   const [aiPhaseIdx, setAiPhaseIdx] = useState(0);
@@ -44,6 +45,7 @@ export function NewPlanForm() {
     setStatus("saving");
     setError(null);
     const cleanResources = resources.map((x) => x.trim()).filter(Boolean);
+    const noteTrimmed = freeformNote.trim();
     const res = await fetch("/api/plans", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -51,6 +53,7 @@ export function NewPlanForm() {
         targetSkill: skill,
         deadline,
         initialResources: cleanResources,
+        freeformNote: noteTrimmed.length > 0 ? noteTrimmed : undefined,
         replaceActive: true,
       }),
     });
@@ -182,6 +185,24 @@ export function NewPlanForm() {
                   </button>
                   <span className="hint">
                     we&apos;ll suggest more once we see your phases
+                  </span>
+                </div>
+                <div className="field">
+                  <label htmlFor="freeformNote">
+                    Anything else fern should know?{" "}
+                    <span className="tag" style={{ marginLeft: 6 }}>
+                      optional
+                    </span>
+                  </label>
+                  <textarea
+                    id="freeformNote"
+                    value={freeformNote}
+                    onChange={(e) => setFreeformNote(e.target.value)}
+                    placeholder="e.g. I learn faster in the morning but only have time at night; rusty so go gently the first week"
+                    style={{ minHeight: 80 }}
+                  />
+                  <span className="hint">
+                    fern reads this verbatim while drafting your plan.
                   </span>
                 </div>
 

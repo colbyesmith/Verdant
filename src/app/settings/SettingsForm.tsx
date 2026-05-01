@@ -6,6 +6,7 @@ import { CalendarIcon, GoogleG, SunArt, WateringCan } from "@/components/verdant
 
 type Props = {
   maxMinutesDay: number;
+  weeklyMinutesTarget: number | null;
   calendarConnected: boolean;
   timeWindows: string;
   defaultJson: string;
@@ -15,6 +16,9 @@ type Props = {
 export function SettingsForm(p: Props) {
   const r = useRouter();
   const [max, setMax] = useState(p.maxMinutesDay);
+  const [weekly, setWeekly] = useState<string>(
+    p.weeklyMinutesTarget != null ? String(p.weeklyMinutesTarget) : ""
+  );
   const [cal, setCal] = useState(p.calendarConnected);
   const [tw, setTw] = useState(
     p.timeWindows && p.timeWindows !== "{}" ? p.timeWindows : p.defaultJson
@@ -35,11 +39,23 @@ export function SettingsForm(p: Props) {
       setBusy(false);
       return;
     }
+    const trimmed = weekly.trim();
+    let weeklyMinutesTarget: number | null = null;
+    if (trimmed.length > 0) {
+      const n = Number(trimmed);
+      if (!Number.isFinite(n) || n < 30 || n > 3000) {
+        setErr("Weekly target must be between 30 and 3000 minutes");
+        setBusy(false);
+        return;
+      }
+      weeklyMinutesTarget = Math.round(n);
+    }
     const res = await fetch("/api/preferences", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         maxMinutesDay: max,
+        weeklyMinutesTarget,
         calendarConnected: cal,
         timeWindows: parsed,
       }),
@@ -157,6 +173,22 @@ export function SettingsForm(p: Props) {
         >
           <span className="tag">15 min</span>
           <span className="tag">3 hr</span>
+        </div>
+        <div className="field" style={{ marginTop: 18 }}>
+          <label htmlFor="weekly">Weekly target (min)</label>
+          <input
+            id="weekly"
+            type="number"
+            min={30}
+            max={3000}
+            step={15}
+            placeholder="auto (infer from windows)"
+            value={weekly}
+            onChange={(e) => setWeekly(e.target.value)}
+          />
+          <span className="hint">
+            optional — fern paces plans toward this many minutes per week.
+          </span>
         </div>
       </div>
 

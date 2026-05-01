@@ -3,7 +3,9 @@ import { generateSproutPlan, supplementalResources } from "@/lib/generate-sprout
 import { insertOrSkip } from "@/lib/google-calendar";
 import { prisma } from "@/lib/db";
 import { ensureUserPreferences } from "@/lib/user";
-import { buildScheduleFromPlan } from "@/lib/time-windows";
+import { packWithScoring } from "@/lib/scoring-pack";
+import { getBusyIntervals } from "@/lib/calendar-read";
+import { summarizeAvailability } from "@/lib/availability-summary";
 import type { SproutPlan, TimeWindows } from "@/types/plan";
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -13,6 +15,7 @@ const createBody = z.object({
   deadline: z.string(),
   startDate: z.string().optional(),
   initialResources: z.array(z.string().min(1)).min(0).max(20),
+  freeformNote: z.string().max(2000).optional(),
   replaceActive: z.boolean().optional().default(true),
 });
 
@@ -38,7 +41,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: parsed.error.message }, { status: 400 });
   }
 
-  const { targetSkill, initialResources, replaceActive } = parsed.data;
+  const { targetSkill, initialResources, replaceActive, freeformNote } = parsed.data;
   const deadline = new Date(parsed.data.deadline);
   const startDate = parsed.data.startDate
     ? new Date(parsed.data.startDate)
@@ -72,27 +75,52 @@ export async function POST(request: Request) {
     pref.timeWindows || "{}"
   ) as TimeWindows;
   const maxM = pref.maxMinutesDay;
+  const slotEffectiveness = JSON.parse(
+    pref.slotEffectiveness || "{}"
+  ) as Record<string, number>;
+
+  // Pull calendar busy + build availability summary for the planner LLM.
+  const busyResult = await getBusyIntervals({
+    userId: s.user.id,
+    accessToken: s.accessToken,
+    from: startDate,
+    to: new Date(deadline.getTime() + 86_400_000),
+  });
+  const externalBusy = busyResult.intervals.filter((b) => !b.isVerdant);
+  const days = Math.max(
+    1,
+    Math.ceil(
+      (deadline.getTime() - startDate.getTime()) / 86_400_000
+    )
+  );
+  const weeks = Math.max(1, Math.ceil(days / 7));
+  const availability = summarizeAvailability({
+    startDate,
+    weeks,
+    timeWindows,
+    busy: externalBusy,
+    slotEffectiveness,
+  });
 
   const sprout: SproutPlan = await generateSproutPlan({
     targetSkill,
     deadline,
     startDate,
     initialResources: initialResources,
+    availability,
+    weeklyMinutesTarget: pref.weeklyMinutesTarget,
+    freeformNote: freeformNote ?? null,
   });
   const recs = supplementalResources(targetSkill);
-  const tasks = sprout.tasks.map((t) => ({
-    id: t.id,
-    title: t.title,
-    type: t.type,
-    minutes: t.minutes,
-  }));
-  let schedule = buildScheduleFromPlan(
-    tasks,
+  const packResult = packWithScoring(sprout.tasks, {
     startDate,
     deadline,
     timeWindows,
-    maxM
-  );
+    busy: externalBusy,
+    maxMinutesPerDay: maxM,
+    slotEffectiveness,
+  });
+  let schedule = packResult.schedule;
 
   const acc = (s as { accessToken?: string }).accessToken;
   const withCal = await Promise.all(
@@ -111,8 +139,19 @@ export async function POST(request: Request) {
       planJson: JSON.stringify(sprout),
       scheduleJson: JSON.stringify(schedule),
       recommendations: JSON.stringify(recs),
+      freeformNote: freeformNote ?? null,
       status: "active",
     },
   });
-  return NextResponse.json({ plan, sprout, schedule, recommendations: recs });
+  return NextResponse.json({
+    plan,
+    sprout,
+    schedule,
+    recommendations: recs,
+    overflow: packResult.overflow.map((t) => ({
+      id: t.id,
+      title: t.title,
+      priority: t.priority ?? "core",
+    })),
+  });
 }

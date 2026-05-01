@@ -61,6 +61,8 @@ model UserPreference {
   /// JSON: { "weekday": { "0": { "start": "19:00", "end": "22:00" } }, ... }
   timeWindows   String
   maxMinutesDay Int   @default(90)
+  /// optional: user's intended weekly study minutes target (design Q4, α). null = infer from windows.
+  weeklyMinutesTarget Int?
   calendarConnected Boolean @default(false)
   /// slot effectiveness: { "Mon-19:30": 4.2, ... }
   slotEffectiveness  String  @default("{}")
@@ -82,6 +84,8 @@ model LearningPlan {
   initialResources String @default("[]")
   /// Full structured plan: phases, tasks
   planJson      String
+  /// Previous planJson, preserved for one-click revert from a regenerate action.
+  planJsonPrev  String?
   /// Scheduled sessions with calendar ids
   scheduleJson  String   @default("[]")
   /// supplemental resource suggestions
@@ -91,6 +95,11 @@ model LearningPlan {
   /// AI-authored "Fern's notes" rendered atop the tend page; JSON array of {kicker, body}.
   fernNotes              String    @default("[]")
   fernNotesGeneratedAt   DateTime?
+
+  /// Freeform planner-only note from the user (design Q4, δ). Goes into the AI prompt verbatim.
+  freeformNote     String?
+  /// User-declared blackout date ranges, JSON: [{from: "YYYY-MM-DD", to: "YYYY-MM-DD", reason?: "..."}]
+  manualBlackouts  String @default("[]")
 
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt

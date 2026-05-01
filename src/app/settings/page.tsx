@@ -30,6 +30,7 @@ export default async function SettingsPage() {
           </p>
           <SettingsForm
             maxMinutesDay={pref.maxMinutesDay}
+            weeklyMinutesTarget={pref.weeklyMinutesTarget}
             calendarConnected={pref.calendarConnected}
             timeWindows={pref.timeWindows}
             defaultJson={JSON.stringify(DEFAULT_TIME_WINDOWS, null, 2)}

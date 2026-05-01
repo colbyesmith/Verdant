@@ -1,7 +1,7 @@
 import { auth } from "@/auth";
 import { Shell } from "@/components/Shell";
-import { prisma } from "@/lib/db";
-import type { FernNote, ScheduledSession, SproutPlan } from "@/types/plan";
+import { loadPlanState } from "@/lib/load-plan-state";
+import type { FernNote, SproutPlan } from "@/types/plan";
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
 import { format, parseISO, differenceInCalendarDays } from "date-fns";
@@ -9,6 +9,7 @@ import { PlanActions } from "./PlanActions";
 import { DeleteSproutButton } from "./DeleteSproutButton";
 import { RoadAheadRow } from "./RoadAheadRow";
 import { FernNotesSection } from "./FernNotesSection";
+import { ConflictBanner } from "./ConflictBanner";
 import { Sprout, ForestSprite, LeafSprig } from "@/components/verdant/art";
 import { SectionTitle } from "@/components/verdant/SectionTitle";
 import { StarRating } from "@/components/verdant/StarRating";
@@ -25,20 +26,17 @@ export default async function PlanPage({
     redirect("/login");
   }
   const { id } = await params;
-  const plan = await prisma.learningPlan.findFirst({
-    where: { id, userId: s.user.id },
+  const state = await loadPlanState({
+    planId: id,
+    userId: s.user.id,
+    accessToken: s.accessToken,
   });
-  if (!plan) {
+  if (!state) {
     notFound();
   }
+  const { plan, schedule, completions, conflicts } = state;
   const sprout: SproutPlan = JSON.parse(plan.planJson) as SproutPlan;
-  const schedule: ScheduledSession[] = JSON.parse(
-    plan.scheduleJson || "[]"
-  ) as ScheduledSession[];
   const recs: string[] = JSON.parse(plan.recommendations || "[]") as string[];
-  const completions = await prisma.taskCompletion.findMany({
-    where: { planId: id },
-  });
   const done = new Set(
     completions.filter((c) => c.completed).map((c) => c.taskId)
   );
@@ -421,7 +419,17 @@ export default async function PlanPage({
                 </ul>
               )}
 
-              <PlanActions planId={id} />
+              <ConflictBanner
+                planId={id}
+                conflicts={conflicts.lockedConflicts.map((c) => ({
+                  sessionId: c.session.id,
+                  sessionTitle: c.session.title,
+                  sessionStart: c.session.start,
+                  sessionEnd: c.session.end,
+                  overlappingCount: c.overlapping.length,
+                }))}
+              />
+              <PlanActions planId={id} hasPrevPlan={!!plan.planJsonPrev} />
             </div>
 
             <div>

@@ -1,109 +1,106 @@
-import { addDays, getDay, set, startOfDay } from "date-fns";
+import { addDays, startOfDay } from "date-fns";
 import type { ScheduledSession, TimeWindows } from "@/types/plan";
-
-function toMinutes(t: string): number {
-  const [h, m] = t.split(":").map(Number);
-  return h * 60 + m;
-}
+import type { BusyInterval } from "@/lib/calendar-read";
+import { freeIntervalsForDay, type FreeInterval } from "@/lib/free-intervals";
 
 /** Pick next start time in preferred windows, advancing day by day */
 export function firstSlotFrom(
   from: Date,
   durationMinutes: number,
   timeWindows: TimeWindows,
-  maxEndDate: Date
+  maxEndDate: Date,
+  busy: BusyInterval[] = []
 ): Date | null {
   for (let d = 0; d < 400; d++) {
     const day = addDays(startOfDay(from), d);
     if (day > maxEndDate) return null;
-    const wd = String(getDay(day));
-    const w = timeWindows[wd] ?? timeWindows[wd === "0" ? "7" : wd];
-    if (!w) continue;
-    const startH = (w as { start: string; end: string }).start;
-    const endH = (w as { start: string; end: string }).end;
-    const wStartM = toMinutes(startH);
-    const wEndM = toMinutes(endH);
-    if (wEndM - wStartM < durationMinutes) continue;
+    const frags = freeIntervalsForDay(day, timeWindows, busy);
+    for (const f of frags) {
+      const fStart = f.start;
+      const fEnd = f.end;
+      const fSpanMin = (fEnd.getTime() - fStart.getTime()) / 60000;
+      if (fSpanMin < durationMinutes) continue;
 
-    const dayStart = set(day, {
-      hours: Math.floor(wStartM / 60),
-      minutes: wStartM % 60,
-      seconds: 0,
-      milliseconds: 0,
-    });
-    if (d === 0 && from > dayStart) {
-      const at = new Date(from);
-      const m = at.getHours() * 60 + at.getMinutes();
-      if (m + durationMinutes <= wEndM && m >= wStartM) {
-        return at;
+      if (d === 0 && from > fStart) {
+        const at = new Date(from);
+        if (
+          at >= fStart &&
+          at.getTime() + durationMinutes * 60_000 <= fEnd.getTime()
+        ) {
+          return at;
+        }
+        continue;
       }
-    }
-    if (d > 0 || from <= dayStart) {
-      return dayStart;
+      if (d > 0 || from <= fStart) {
+        return fStart;
+      }
     }
   }
   return null;
+}
+
+function largestFragmentMinutes(frags: FreeInterval[]): number {
+  let best = 0;
+  for (const f of frags) {
+    const m = (f.end.getTime() - f.start.getTime()) / 60000;
+    if (m > best) best = m;
+  }
+  return best;
 }
 
 function maxMinutesThatFitInWindow(
   day: Date,
   timeWindows: TimeWindows,
-  maxMinutesPerDay: number
+  maxMinutesPerDay: number,
+  busy: BusyInterval[]
 ): number {
-  const wd = String(getDay(startOfDay(day)));
-  const w = timeWindows[wd] ?? timeWindows["1"];
-  if (!w) return 0;
-  const span =
-    toMinutes((w as { end: string }).end) - toMinutes((w as { start: string }).start);
-  return Math.max(0, Math.min(maxMinutesPerDay, span));
+  const frags = freeIntervalsForDay(day, timeWindows, busy);
+  if (frags.length === 0) return 0;
+  return Math.max(0, Math.min(maxMinutesPerDay, largestFragmentMinutes(frags)));
 }
 
 function advanceToLearnableDay(
   from: Date,
   timeWindows: TimeWindows,
-  deadline: Date
+  deadline: Date,
+  busy: BusyInterval[]
 ): Date | null {
   let cur = startOfDay(from);
   const end = startOfDay(deadline);
   for (let i = 0; i < 400; i++) {
     if (cur > end) return null;
-    if (maxMinutesThatFitInWindow(cur, timeWindows, 24 * 60) > 0) return cur;
+    if (maxMinutesThatFitInWindow(cur, timeWindows, 24 * 60, busy) > 0) return cur;
     cur = addDays(cur, 1);
   }
   return null;
 }
 
-/** Start of the single daily learning block (preferred window + notBefore). */
+/**
+ * Start of the daily learning block — finds the first free fragment on `day`
+ * (after `notBefore`) that can fit `durationMinutes` contiguously.
+ */
 function sessionStartOnDay(
   day: Date,
   notBefore: Date,
   durationMinutes: number,
   timeWindows: TimeWindows,
-  deadline: Date
+  deadline: Date,
+  busy: BusyInterval[]
 ): Date | null {
   const sod = startOfDay(day);
   if (sod > startOfDay(deadline)) return null;
-  const wd = String(getDay(sod));
-  const w = timeWindows[wd] ?? timeWindows["1"];
-  if (!w) return null;
-  const startH = (w as { start: string; end: string }).start;
-  const endH = (w as { end: string }).end;
-  const wStartM = toMinutes(startH);
-  const wEndM = toMinutes(endH);
-  if (wEndM - wStartM < durationMinutes) return null;
+  const frags = freeIntervalsForDay(sod, timeWindows, busy);
+  if (frags.length === 0) return null;
 
-  let cursor = set(sod, {
-    hours: Math.floor(wStartM / 60),
-    minutes: wStartM % 60,
-    seconds: 0,
-    milliseconds: 0,
-  });
-  if (notBefore > cursor) cursor = new Date(notBefore);
-  const cMin = cursor.getHours() * 60 + cursor.getMinutes();
-  if (cMin + durationMinutes > wEndM) return null;
-  const endMs = cursor.getTime() + durationMinutes * 60 * 1000;
-  if (endMs > deadline.getTime()) return null;
-  return cursor;
+  for (const f of frags) {
+    let cursor = f.start;
+    if (notBefore > cursor) cursor = new Date(notBefore);
+    if (cursor < f.start) cursor = f.start;
+    if (cursor.getTime() + durationMinutes * 60_000 > f.end.getTime()) continue;
+    if (cursor.getTime() + durationMinutes * 60_000 > deadline.getTime()) continue;
+    return cursor;
+  }
+  return null;
 }
 
 function titleForDailyBlock(
@@ -122,7 +119,8 @@ export function buildScheduleFromPlan(
   startDate: Date,
   deadline: Date,
   timeWindows: TimeWindows,
-  maxMinutesPerDay: number
+  maxMinutesPerDay: number,
+  busy: BusyInterval[] = []
 ): ScheduledSession[] {
   const order: Record<ScheduledSession["type"], number> = {
     lesson: 0,
@@ -135,7 +133,7 @@ export function buildScheduleFromPlan(
 
   type T = (typeof sorted)[number];
   let cursorDay =
-    advanceToLearnableDay(startOfDay(startDate), timeWindows, deadline) ??
+    advanceToLearnableDay(startOfDay(startDate), timeWindows, deadline, busy) ??
     startOfDay(startDate);
   let bucket: T[] = [];
   let bucketMins = 0;
@@ -157,10 +155,10 @@ export function buildScheduleFromPlan(
     let guard = 0;
     while (guard < 500) {
       guard++;
-      let dayCap = maxMinutesThatFitInWindow(cursorDay, timeWindows, maxMinutesPerDay);
+      let dayCap = maxMinutesThatFitInWindow(cursorDay, timeWindows, maxMinutesPerDay, busy);
       if (dayCap === 0) {
         flush();
-        const next = advanceToLearnableDay(addDays(cursorDay, 1), timeWindows, deadline);
+        const next = advanceToLearnableDay(addDays(cursorDay, 1), timeWindows, deadline, busy);
         if (!next) break;
         cursorDay = next;
         continue;
@@ -169,7 +167,7 @@ export function buildScheduleFromPlan(
         if (guard > 120) {
           dur = dayCap;
         } else {
-          const next = advanceToLearnableDay(addDays(cursorDay, 1), timeWindows, deadline);
+          const next = advanceToLearnableDay(addDays(cursorDay, 1), timeWindows, deadline, busy);
           if (!next) break;
           cursorDay = next;
           continue;
@@ -177,7 +175,7 @@ export function buildScheduleFromPlan(
       }
       if (bucket.length > 0 && bucketMins + dur > dayCap) {
         flush();
-        const next = advanceToLearnableDay(addDays(cursorDay, 1), timeWindows, deadline);
+        const next = advanceToLearnableDay(addDays(cursorDay, 1), timeWindows, deadline, busy);
         if (!next) break;
         cursorDay = next;
         continue;
@@ -200,7 +198,8 @@ export function buildScheduleFromPlan(
       notBefore,
       b.minutes,
       timeWindows,
-      deadline
+      deadline,
+      busy
     );
     if (!start) continue;
 
@@ -225,7 +224,7 @@ export function buildScheduleFromPlan(
   if (out.length === 0 && sorted.length > 0) {
     const t = sorted[0];
     const dur = Math.max(15, Math.min(t.minutes, maxMinutesPerDay));
-    const fallback = firstSlotFrom(startDate, dur, timeWindows, deadline);
+    const fallback = firstSlotFrom(startDate, dur, timeWindows, deadline, busy);
     if (fallback) {
       out.push({
         id: `sess-${t.id}`,
@@ -250,7 +249,8 @@ export function rescheduleUncompleted(
   fromDate: Date,
   deadline: Date,
   timeWindows: TimeWindows,
-  maxPerDay: number
+  maxPerDay: number,
+  busy: BusyInterval[] = []
 ): ScheduledSession[] {
   const past = sessions.filter((s) => new Date(s.end) < fromDate);
   const future = sessions.filter((s) => new Date(s.start) >= fromDate);
@@ -259,7 +259,17 @@ export function rescheduleUncompleted(
       (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
     );
   }
-  const tasks = future.flatMap((s) => {
+  const lockedFuture = future.filter((s) => s.locked);
+  const unlockedFuture = future.filter((s) => !s.locked);
+
+  const lockedAsBusy: BusyInterval[] = lockedFuture.map((s) => ({
+    start: new Date(s.start),
+    end: new Date(s.end),
+    calendarEventId: s.calendarEventId ?? `verdant-locked-${s.id}`,
+    isVerdant: true,
+  }));
+
+  const tasks = unlockedFuture.flatMap((s) => {
     if (s.agenda && s.agenda.length > 0) {
       return s.agenda.map((a) => ({
         id: a.planTaskId,
@@ -282,14 +292,22 @@ export function rescheduleUncompleted(
       },
     ];
   });
+
+  if (tasks.length === 0) {
+    return [...past, ...lockedFuture].sort(
+      (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
+    );
+  }
+
   const newSched = buildScheduleFromPlan(
     tasks,
     fromDate,
     deadline,
     timeWindows,
-    maxPerDay
+    maxPerDay,
+    [...busy, ...lockedAsBusy]
   );
-  return [...past, ...newSched].sort(
+  return [...past, ...lockedFuture, ...newSched].sort(
     (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
   );
 }

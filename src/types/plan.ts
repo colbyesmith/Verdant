@@ -1,17 +1,33 @@
 export type TaskType = "lesson" | "review" | "milestone";
 
+export type TimeOfDay = "morning" | "afternoon" | "evening" | "any";
+
 export interface PlanTask {
   id: string;
   title: string;
   type: TaskType;
   minutes: number;
   /**
-   * 0 = first week; use relative ordering
+   * Soft hint: AI-preferred week offset from `startDate` (0 = first week).
+   * Honored by the scoring packer as a preference, not a hard constraint.
    */
   weekIndex: number;
+  /** Soft hint: AI-preferred day-of-week (0 = Mon, 6 = Sun). */
   dayOffsetInWeek: number;
   description?: string;
   resourceRef?: string;
+
+  // --- Hint fields (design Q5). Optional with sensible defaults so old plans keep working. ---
+  /** AI-preferred time of day. Defaults to "any" when absent. */
+  preferredTimeOfDay?: TimeOfDay;
+  /** Spacing rule: this task must come after the named predecessor. */
+  mustFollowTaskId?: string;
+  /** Minimum days between predecessor and this task (used with mustFollowTaskId). */
+  minDaysAfterPredecessor?: number;
+  /** When true, packer won't merge this task with others into a daily block. */
+  preferStandalone?: boolean;
+  /** Drop-order signal: stretch tasks dropped first when overflow can't fit before deadline. */
+  priority?: "core" | "stretch";
 }
 
 export interface SproutPlan {
@@ -66,4 +82,11 @@ export interface ScheduledSession {
   type: TaskType;
   calendarEventId?: string;
   googleSynced?: boolean;
+  /**
+   * When true, the packer treats this session as a hard external block:
+   * it stays put on reschedules and blocks other tasks from its slot. Set
+   * via the tend-page toggle, or implicitly when the user drags the event
+   * inside Google Calendar (drift adoption).
+   */
+  locked?: boolean;
 }

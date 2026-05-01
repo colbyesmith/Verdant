@@ -28,6 +28,13 @@ const planSchema = z.object({
         .string()
         .optional()
         .transform((s) => (s ? s.trim() : s)),
+      preferredTimeOfDay: z
+        .enum(["morning", "afternoon", "evening", "any"])
+        .optional(),
+      mustFollowTaskId: z.string().optional(),
+      minDaysAfterPredecessor: z.number().int().min(0).max(60).optional(),
+      preferStandalone: z.boolean().optional(),
+      priority: z.enum(["core", "stretch"]).optional(),
     })
   ),
   rationale: z.array(z.string()).optional(),
@@ -109,6 +116,12 @@ export async function generatePlanWithAI(input: {
   deadline: Date;
   startDate: Date;
   initialResources: string[];
+  /** Optional: availability summary (design Q3) — included in the LLM prompt. */
+  availability?: import("./availability-summary").AvailabilitySummary;
+  /** Optional: user's weekly minutes target (design Q4 α). */
+  weeklyMinutesTarget?: number | null;
+  /** Optional: freeform note (design Q4 δ), pasted verbatim into the prompt. */
+  freeformNote?: string | null;
 }): Promise<SproutPlan> {
   const days = Math.max(
     1,
@@ -130,6 +143,9 @@ export async function generatePlanWithAI(input: {
     deadline: input.deadline.toISOString().slice(0, 10),
     weeks,
     initialResources: input.initialResources,
+    availability: input.availability,
+    weeklyMinutesTarget: input.weeklyMinutesTarget,
+    freeformNote: input.freeformNote,
   });
 
   try {

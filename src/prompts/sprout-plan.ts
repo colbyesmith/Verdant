@@ -20,10 +20,12 @@ You design "sprouts" — multi-week learning plans for self-directed learners. A
 
 Use these principles:
 - **Phases first.** Break the plan into 2–5 named phases (e.g. Foundations / Build / Combine / Polish), each with a sharp focus sentence.
-- **Spaced repetition.** Schedule review tasks 2–4 days after the lessons they reinforce.
-- **Milestone gates.** End each phase with a milestone task that visibly proves the phase is complete (e.g. "film yourself doing 2 clean reps").
+- **Spaced repetition.** Schedule review tasks 2–4 days after the lessons they reinforce. Use \`mustFollowTaskId\` and \`minDaysAfterPredecessor\` on review tasks to encode this spacing.
+- **Milestone gates.** End each phase with a milestone task that visibly proves the phase is complete (e.g. "film yourself doing 2 clean reps"). Set \`preferStandalone: true\` on milestones so they don't share a daily block.
 - **Realistic time.** Keep individual sessions in the 15–90 minute range. Most lessons should be 30–60 min; reviews 15–30 min; milestones 30–60 min.
-- **Weekly cadence.** Aim for 3 lessons + 2 reviews + 1 milestone per phase, but adapt to the timeline.
+- **Pace to the user's actual time budget.** The user prompt includes a per-week minutes summary; respect anomaly notes (e.g. "mostly blocked Mon/Tue") by placing lighter weeks where reality is constrained.
+- **Time-of-day hints.** Default \`preferredTimeOfDay\` to the user's strongest histogram bucket. Mornings for milestones when possible.
+- **Priority.** Every task must have \`priority\`: "core" tasks are essential to the goal; "stretch" tasks are extras that may be dropped if the schedule overflows. Mark stretch sparingly.
 - **Use the resources.** If the user provided links, weave them into the early lesson tasks via the resourceRef field.
 - **No fluff.** Every task should advance the goal. No "introduction to learning" filler.
 
@@ -35,9 +37,48 @@ export interface SproutPlanPromptInput {
   deadline: string;
   weeks: number;
   initialResources: string[];
+  /** Optional context produced by lib/availability-summary.ts. */
+  availability?: {
+    typicalWeeklyMinutes: number;
+    perWeek: { weekIndex: number; minutes: number; note: string | null }[];
+    preferredTimeOfDayHistogram: { morning: number; afternoon: number; evening: number };
+  };
+  /** Optional weekly target the user declared in settings. */
+  weeklyMinutesTarget?: number | null;
+  /** Optional freeform note from the plan creation form. Pasted verbatim. */
+  freeformNote?: string | null;
 }
 
 export function buildSproutPlanUserPrompt(input: SproutPlanPromptInput): string {
+  const availabilityLines: string[] = [];
+  if (input.availability) {
+    const a = input.availability;
+    availabilityLines.push(
+      ``,
+      `Availability summary (do not propose more than this fits):`,
+      `- Typical weekly capacity: ~${a.typicalWeeklyMinutes} minutes.`,
+      ...(input.weeklyMinutesTarget != null
+        ? [`- User's stated weekly target: ${input.weeklyMinutesTarget} minutes.`]
+        : []),
+      `- Per-week minutes:`,
+      ...a.perWeek.map(
+        (w) =>
+          `  - week ${w.weekIndex}: ${w.minutes} min${w.note ? ` (${w.note})` : ""}`
+      ),
+    );
+    const h = a.preferredTimeOfDayHistogram;
+    if (h.morning + h.afternoon + h.evening > 0) {
+      availabilityLines.push(
+        `- Past effectiveness by time of day: morning=${h.morning}, afternoon=${h.afternoon}, evening=${h.evening}. Bias \`preferredTimeOfDay\` toward the strongest bucket.`
+      );
+    }
+  }
+
+  const noteLines: string[] = [];
+  if (input.freeformNote && input.freeformNote.trim().length > 0) {
+    noteLines.push(``, `User's note (verbatim):`, `"""`, input.freeformNote.trim(), `"""`);
+  }
+
   const lines = [
     `Design a sprout for: ${input.targetSkill}`,
     ``,
@@ -47,6 +88,8 @@ export function buildSproutPlanUserPrompt(input: SproutPlanPromptInput): string 
         ? " (none — propose phases without specific resourceRefs)"
         : "\n" + input.initialResources.map((r, i) => `  ${i + 1}. ${r}`).join("\n")
     }`,
+    ...availabilityLines,
+    ...noteLines,
     ``,
     `Return JSON of this exact shape:`,
     JSON.stringify(
@@ -62,6 +105,7 @@ export function buildSproutPlanUserPrompt(input: SproutPlanPromptInput): string 
         ],
         tasks: [
           {
+            id: 'OPTIONAL stable id like "t-week0-foundations". If you use mustFollowTaskId, the predecessor must have an id.',
             title: "Concrete session title",
             type: "lesson | review | milestone",
             minutes: "integer in [15, 90]",
@@ -71,6 +115,16 @@ export function buildSproutPlanUserPrompt(input: SproutPlanPromptInput): string 
               "1-3 sentences: what to do in this session, in plain prose. No bullet lists, no markdown.",
             resourceRef:
               "OPTIONAL: a URL or resource name from the list above, if the session uses it.",
+            preferredTimeOfDay:
+              '"morning" | "afternoon" | "evening" | "any" — soft hint.',
+            mustFollowTaskId:
+              'OPTIONAL: id of the task this one must come after (for review tasks reinforcing a specific lesson).',
+            minDaysAfterPredecessor:
+              "OPTIONAL integer days; pair with mustFollowTaskId.",
+            preferStandalone:
+              "OPTIONAL boolean. Set true on milestones so they don't share a daily block.",
+            priority:
+              '"core" | "stretch" — required. Stretch tasks are dropped first when overflow happens.',
           },
         ],
         rationale: [
@@ -92,7 +146,8 @@ export function buildSproutPlanUserPrompt(input: SproutPlanPromptInput): string 
     `Constraints:`,
     `- 2-5 phases. Each phase ends with a milestone task.`,
     `- Spread tasks across the whole window — do not pile everything into week 0.`,
-    `- Reviews must come after the lessons they reinforce.`,
+    `- Reviews must come after the lessons they reinforce; encode this with mustFollowTaskId + minDaysAfterPredecessor.`,
+    `- Every task must have a priority of "core" or "stretch".`,
     `- The "rationale" array is your audit trail: why this phase order, why this pacing, why these milestones. The user reads it.`,
     `- weeklyShape and sessionsPlanned describe the plan you produced (not abstract advice).`,
   ];

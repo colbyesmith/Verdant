@@ -4,7 +4,13 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { CalendarIcon, ForestSprite } from "@/components/verdant/art";
 
-export function PlanActions({ planId }: { planId: string }) {
+export function PlanActions({
+  planId,
+  hasPrevPlan,
+}: {
+  planId: string;
+  hasPrevPlan?: boolean;
+}) {
   const r = useRouter();
   const [text, setText] = useState("");
   const [message, setMessage] = useState<string | null>(null);
@@ -74,6 +80,65 @@ export function PlanActions({ planId }: { planId: string }) {
       setErr(j.error || "Reschedule failed");
     } else {
       setMessage("Rebalanced from today to your deadline.");
+      r.refresh();
+    }
+    setBusy(false);
+  }
+
+  async function rebuildSchedule() {
+    setBusy(true);
+    setErr(null);
+    setMessage(null);
+    const res = await fetch(`/api/plans/${planId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rebuildSchedule: true }),
+    });
+    const j = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      summary?: string;
+    };
+    if (!res.ok) {
+      setErr(j.error || "Rebuild failed");
+    } else {
+      setMessage(j.summary || "Rebuilt schedule from your plan.");
+      r.refresh();
+    }
+    setBusy(false);
+  }
+
+  async function regenerate(revert = false) {
+    if (
+      !revert &&
+      !confirm(
+        "Regenerate this plan with the current AI? Your current plan is saved as a one-click revert."
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    setMessage(null);
+    const res = await fetch(`/api/plans/${planId}/regenerate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(revert ? { revert: true } : {}),
+    });
+    const j = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      overflow?: { id: string; title: string }[];
+      reverted?: boolean;
+    };
+    if (!res.ok) {
+      setErr(j.error || "Regenerate failed");
+    } else {
+      const over = j.overflow ?? [];
+      const verb = j.reverted ? "Reverted to previous plan" : "Regenerated plan";
+      setMessage(
+        over.length > 0
+          ? `${verb}. ${over.length} task(s) didn't fit before the deadline.`
+          : `${verb}.`
+      );
       r.refresh();
     }
     setBusy(false);
@@ -152,6 +217,32 @@ export function PlanActions({ planId }: { planId: string }) {
           >
             rebalance from today
           </button>
+          <button
+            type="button"
+            onClick={rebuildSchedule}
+            disabled={busy}
+            className="btn sm ghost"
+          >
+            rebuild schedule
+          </button>
+          <button
+            type="button"
+            onClick={() => regenerate(false)}
+            disabled={busy}
+            className="btn sm ghost"
+          >
+            regenerate plan
+          </button>
+          {hasPrevPlan && (
+            <button
+              type="button"
+              onClick={() => regenerate(true)}
+              disabled={busy}
+              className="btn sm ghost"
+            >
+              revert
+            </button>
+          )}
         </div>
         {message && (
           <p
