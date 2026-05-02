@@ -12,6 +12,7 @@ import {
 import { ForestSprite } from "@/components/verdant/art";
 import { StarRating } from "@/components/verdant/StarRating";
 import { displayTitle, phaseForWeek, youtubeId } from "@/lib/phase";
+import { SessionControls } from "../../session/[taskId]/SessionControls";
 
 function pickVideoFor(task: PlanTask, initialResources: string[]): string | null {
   if (task.resourceRef) {
@@ -41,12 +42,48 @@ export default async function JournalEntryPage({
   if (!plan) notFound();
 
   const sprout: SproutPlan = JSON.parse(plan.planJson) as SproutPlan;
-  const task = (sprout.tasks || []).find((t) => t.id === taskId);
-  if (!task) notFound();
+  const planTask = (sprout.tasks || []).find((t) => t.id === taskId);
 
-  const completion = await prisma.taskCompletion.findUnique({
-    where: { planId_taskId: { planId: id, taskId } },
-  });
+  // Reviews don't live in planJson — synthesize a PlanTask from ReviewInstance
+  // so the journal renders the same shape as for lessons/milestones.
+  let task: PlanTask;
+  let isReview = false;
+  let reviewState: { rating: number | null; completedAt: Date | null } | null = null;
+  if (planTask) {
+    task = planTask;
+  } else {
+    const ri = await prisma.reviewInstance.findUnique({
+      where: { id: taskId },
+      include: { lessonState: true },
+    });
+    if (!ri || ri.planId !== plan.id) notFound();
+    isReview = true;
+    const parent = (sprout.tasks || []).find(
+      (t) => t.id === ri.lessonState.lessonId
+    );
+    const parentTitle = parent?.title ?? "earlier lesson";
+    task = {
+      id: ri.id,
+      title: `Review: ${parentTitle}`,
+      type: "review",
+      minutes: 15,
+      weekIndex: parent?.weekIndex ?? 0,
+      dayOffsetInWeek: parent?.dayOffsetInWeek ?? 0,
+      description: parent?.description
+        ? `Re-engage with: ${parent.description}`
+        : `Pull up what you learned in "${parentTitle}".`,
+      resourceRef: parent?.resourceRef,
+      dueAt: ri.dueAt.toISOString(),
+      priority: "core",
+    };
+    reviewState = { rating: ri.rating, completedAt: ri.completedAt };
+  }
+
+  const completion = isReview
+    ? null
+    : await prisma.taskCompletion.findUnique({
+        where: { planId_taskId: { planId: id, taskId } },
+      });
 
   const phases = sprout.phases || [];
   const phaseIdx = phaseForWeek(task.weekIndex, phases.length);
@@ -66,14 +103,19 @@ export default async function JournalEntryPage({
       row.planTaskId === taskId ||
       row.agenda?.some((a) => a.planTaskId === taskId)
   );
-  const ranOn = completion?.completedAt
-    ? format(completion.completedAt, "EEE, MMM d")
+  const completedAt = isReview ? reviewState?.completedAt ?? null : completion?.completedAt ?? null;
+  const ranOn = completedAt
+    ? format(completedAt, "EEE, MMM d")
     : scheduledFor
       ? format(parseISO(scheduledFor.start), "EEE, MMM d")
       : "—";
 
-  const rating = completion?.rating ?? 0;
-  const completed = Boolean(completion?.completed);
+  const rating = isReview
+    ? reviewState?.rating ?? 0
+    : completion?.rating ?? 0;
+  const completed = isReview
+    ? reviewState?.completedAt != null
+    : Boolean(completion?.completed);
 
   return (
     <Shell>
@@ -205,31 +247,39 @@ export default async function JournalEntryPage({
                 )}
               </div>
             </div>
-            <div
-              className="ink-card soft"
-              style={{
-                padding: 16,
-                minWidth: 220,
-                background: "var(--paper-warm)",
-              }}
-            >
-              <div className="tag" style={{ marginBottom: 6 }}>
-                nav
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 240 }}>
+              <SessionControls
+                planId={id}
+                taskId={taskId}
+                taskType={task.type}
+                initialDone={completed}
+                initialRating={rating}
+              />
+              <div
+                className="ink-card soft"
+                style={{
+                  padding: 16,
+                  background: "var(--paper-warm)",
+                }}
+              >
+                <div className="tag" style={{ marginBottom: 6 }}>
+                  nav
+                </div>
+                <Link
+                  href={`/plan/${id}`}
+                  className="btn sm"
+                  style={{ width: "100%", justifyContent: "flex-start", marginBottom: 6 }}
+                >
+                  ← back to sprout
+                </Link>
+                <Link
+                  href={`/plan/${id}/session/${taskId}`}
+                  className="btn sm"
+                  style={{ width: "100%", justifyContent: "flex-start" }}
+                >
+                  view lesson page →
+                </Link>
               </div>
-              <Link
-                href={`/plan/${id}`}
-                className="btn sm"
-                style={{ width: "100%", justifyContent: "flex-start", marginBottom: 6 }}
-              >
-                ← back to sprout
-              </Link>
-              <Link
-                href={`/plan/${id}/session/${taskId}`}
-                className="btn sm"
-                style={{ width: "100%", justifyContent: "flex-start" }}
-              >
-                view lesson page →
-              </Link>
             </div>
           </div>
 

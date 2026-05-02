@@ -1,7 +1,8 @@
 import { auth } from "@/auth";
 import { Shell } from "@/components/Shell";
 import { loadPlanState } from "@/lib/load-plan-state";
-import type { FernNote, SproutPlan } from "@/types/plan";
+import { prisma } from "@/lib/db";
+import type { FernNote, ScheduledSession, SproutPlan, TaskType } from "@/types/plan";
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
 import { format, parseISO, differenceInCalendarDays } from "date-fns";
@@ -69,12 +70,125 @@ export default async function PlanPage({
     return i === -1 ? Math.max(0, phaseTaskCounts.length - 1) : i;
   })();
 
-  const upcoming = schedule
-    .filter((row) => parseISO(row.end) >= now)
-    .sort((a, b) => +parseISO(a.start) - +parseISO(b.start));
-  const completedSessions = schedule
-    .filter((row) => parseISO(row.end) < now)
-    .sort((a, b) => +parseISO(b.start) - +parseISO(a.start));
+  // Status-based bucketing: a task is in the journal iff the user committed it
+  // (rated + marked done). Everything else lives in to-do, including past-but-
+  // unmarked sessions. The schedule timeline is the *display* axis, not the
+  // ownership axis — completion status alone decides the bucket.
+  const reviewInstances = await prisma.reviewInstance.findMany({
+    where: { planId: id },
+    include: { lessonState: true },
+  });
+  const reviewCompletedIds = new Set(
+    reviewInstances.filter((r) => r.completedAt != null).map((r) => r.id)
+  );
+
+  function entryTaskIds(row: ScheduledSession): string[] {
+    if (row.agenda && row.agenda.length > 0) {
+      return row.agenda.map((a) => a.planTaskId);
+    }
+    return [row.planTaskId];
+  }
+  function isEntryCompleted(row: ScheduledSession): boolean {
+    return entryTaskIds(row).every(
+      (tid) => done.has(tid) || reviewCompletedIds.has(tid)
+    );
+  }
+
+  type ToDoRow = {
+    id: string;
+    title: string;
+    type: TaskType;
+    start: Date;
+    end: Date;
+    primaryTaskId: string;
+    isOverdue: boolean;
+    rating: number;
+  };
+
+  const toDo: ToDoRow[] = schedule
+    .filter((row) => !isEntryCompleted(row))
+    .map((row) => {
+      const primaryTaskId =
+        row.agenda && row.agenda.length > 0
+          ? row.agenda[0].planTaskId
+          : row.planTaskId;
+      const start = parseISO(row.start);
+      const end = parseISO(row.end);
+      return {
+        id: row.id,
+        title: row.title,
+        type: row.type,
+        start,
+        end,
+        primaryTaskId,
+        isOverdue: end < now,
+        rating: effByTask[primaryTaskId] || 0,
+      };
+    })
+    .sort((a, b) => {
+      // Overdue first, then chronological
+      if (a.isOverdue !== b.isOverdue) return a.isOverdue ? -1 : 1;
+      return a.start.getTime() - b.start.getTime();
+    });
+
+  // Journal sources from completion records, not schedule entries — completed
+  // future tasks have their schedule entry removed (slot freed) but the journal
+  // entry persists. This is the rule "tasks always live in one bucket."
+  type JournalRow = {
+    key: string;
+    taskId: string; // for href
+    title: string;
+    type: TaskType;
+    completedAt: Date | null;
+    scheduledStart: Date | null;
+    rating: number;
+  };
+  const journal: JournalRow[] = [];
+  // Lessons + milestones
+  for (const c of completions) {
+    if (!c.completed) continue;
+    const t = (sprout.tasks ?? []).find((x) => x.id === c.taskId);
+    if (!t) continue;
+    const sess = schedule.find(
+      (row) =>
+        row.planTaskId === c.taskId ||
+        row.agenda?.some((a) => a.planTaskId === c.taskId)
+    );
+    journal.push({
+      key: `c-${c.id}`,
+      taskId: c.taskId,
+      title: t.title,
+      type: t.type,
+      completedAt: c.completedAt,
+      scheduledStart: sess ? parseISO(sess.start) : null,
+      rating: c.rating ?? 0,
+    });
+  }
+  // Reviews
+  for (const ri of reviewInstances) {
+    if (!ri.completedAt) continue;
+    const parent = (sprout.tasks ?? []).find((t) => t.id === ri.lessonState.lessonId);
+    const title = `Review: ${parent?.title ?? "lesson"}`;
+    const sess = schedule.find(
+      (row) =>
+        row.planTaskId === ri.id ||
+        row.agenda?.some((a) => a.planTaskId === ri.id)
+    );
+    journal.push({
+      key: `r-${ri.id}`,
+      taskId: ri.id,
+      title,
+      type: "review",
+      completedAt: ri.completedAt,
+      scheduledStart: sess ? parseISO(sess.start) : null,
+      rating: ri.rating ?? 0,
+    });
+  }
+  journal.sort((a, b) => {
+    const ad = a.completedAt?.getTime() ?? 0;
+    const bd = b.completedAt?.getTime() ?? 0;
+    return bd - ad; // most recent first
+  });
 
   const initialResources: string[] = JSON.parse(
     plan.initialResources || "[]"
@@ -368,10 +482,10 @@ export default async function PlanPage({
                     color: "var(--ink-faded)",
                   }}
                 >
-                  {upcoming.length} upcoming · click to open
+                  {toDo.length} to do · click to open
                 </span>
               </div>
-              {upcoming.length === 0 ? (
+              {toDo.length === 0 ? (
                 <div
                   className="dotted"
                   style={{
@@ -382,7 +496,7 @@ export default async function PlanPage({
                     fontStyle: "italic",
                   }}
                 >
-                  no sessions ahead. ask Fern to rebalance below.
+                  to-do is empty — everything tended.
                 </div>
               ) : (
                 <div
@@ -407,64 +521,59 @@ export default async function PlanPage({
                       zIndex: 0,
                     }}
                   />
-                  {upcoming.map((row) => {
-                    // For multi-task agendas, use the first task as the navigation target.
-                    const taskId =
-                      row.agenda && row.agenda.length > 0
-                        ? row.agenda[0].planTaskId
-                        : row.planTaskId;
-                    const eff = effByTask[taskId] ?? 0;
-                    const isDone = done.has(taskId);
-                    const startDate = parseISO(row.start);
-                    return (
-                      <Link
-                        key={row.id}
-                        href={`/plan/${id}/session/${taskId}`}
+                  {toDo.map((row) => (
+                    <Link
+                      key={row.id}
+                      href={`/plan/${id}/session/${row.primaryTaskId}`}
+                      style={{
+                        display: "flex",
+                        alignItems: "stretch",
+                        gap: 14,
+                        position: "relative",
+                        textDecoration: "none",
+                        color: "inherit",
+                      }}
+                    >
+                      <div
                         style={{
-                          display: "flex",
-                          alignItems: "stretch",
-                          gap: 14,
-                          position: "relative",
-                          textDecoration: "none",
-                          color: "inherit",
+                          width: 44,
+                          height: 44,
+                          borderRadius: "50%",
+                          background: row.isOverdue
+                            ? "#f3cbc1"
+                            : "var(--paper-warm)",
+                          border: row.isOverdue
+                            ? "1.5px solid var(--berry)"
+                            : "1.5px solid var(--ink)",
+                          display: "grid",
+                          placeItems: "center",
+                          flexShrink: 0,
+                          zIndex: 2,
+                          fontFamily: "var(--font-jetbrains)",
+                          fontSize: 11,
+                          alignSelf: "center",
                         }}
                       >
-                        <div
-                          style={{
-                            width: 44,
-                            height: 44,
-                            borderRadius: "50%",
-                            background: "var(--paper-warm)",
-                            border: "1.5px solid var(--ink)",
-                            display: "grid",
-                            placeItems: "center",
-                            flexShrink: 0,
-                            zIndex: 2,
-                            fontFamily: "var(--font-jetbrains)",
-                            fontSize: 11,
-                            alignSelf: "center",
-                          }}
-                        >
-                          <div style={{ textAlign: "center", lineHeight: 1.1 }}>
-                            <div style={{ fontWeight: 600 }}>
-                              {format(startDate, "EEE")}
-                            </div>
-                            <div style={{ color: "var(--ink-faded)" }}>
-                              {format(startDate, "HH:mm")}
-                            </div>
+                        <div style={{ textAlign: "center", lineHeight: 1.1 }}>
+                          <div style={{ fontWeight: 600 }}>
+                            {format(row.start, "EEE")}
+                          </div>
+                          <div style={{ color: "var(--ink-faded)" }}>
+                            {format(row.start, "HH:mm")}
                           </div>
                         </div>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <RoadAheadRow
-                            title={row.title}
-                            type={row.type}
-                            rating={eff || 0}
-                            done={isDone}
-                          />
-                        </div>
-                      </Link>
-                    );
-                  })}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <RoadAheadRow
+                          title={row.title}
+                          type={row.type}
+                          rating={row.rating}
+                          done={false}
+                          overdue={row.isOverdue}
+                        />
+                      </div>
+                    </Link>
+                  ))}
                 </div>
               )}
 
@@ -503,7 +612,7 @@ export default async function PlanPage({
                     color: "var(--ink-faded)",
                   }}
                 >
-                  {completedSessions.length} entries · scroll
+                  {journal.length} entries · scroll
                 </span>
               </div>
               <div
@@ -517,7 +626,7 @@ export default async function PlanPage({
                     "repeating-linear-gradient(0deg, transparent 0, transparent 36px, rgba(43,36,24,0.04) 36px, rgba(43,36,24,0.04) 37px)",
                 }}
               >
-                {completedSessions.length === 0 ? (
+                {journal.length === 0 ? (
                   <p
                     style={{
                       fontFamily: "var(--font-fraunces)",
@@ -530,62 +639,59 @@ export default async function PlanPage({
                     nothing tended yet — your first entry will land here.
                   </p>
                 ) : (
-                  completedSessions.map((row, i, arr) => {
-                    const taskId =
-                      row.agenda && row.agenda.length > 0
-                        ? row.agenda[0].planTaskId
-                        : row.planTaskId;
-                    const eff = effByTask[taskId] ?? 0;
-                    return (
-                      <Link
-                        key={row.id}
-                        href={`/plan/${id}/journal/${taskId}`}
+                  journal.map((row, i, arr) => (
+                    <Link
+                      key={row.key}
+                      href={`/plan/${id}/journal/${row.taskId}`}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "60px 1fr auto 14px",
+                        gap: 10,
+                        alignItems: "center",
+                        padding: "10px 0",
+                        borderBottom:
+                          i < arr.length - 1
+                            ? "1.25px dashed var(--ink-soft)"
+                            : "none",
+                        textDecoration: "none",
+                        color: "inherit",
+                      }}
+                    >
+                      <div
                         style={{
-                          display: "grid",
-                          gridTemplateColumns: "60px 1fr auto 14px",
-                          gap: 10,
-                          alignItems: "center",
-                          padding: "10px 0",
-                          borderBottom:
-                            i < arr.length - 1
-                              ? "1.25px dashed var(--ink-soft)"
-                              : "none",
-                          textDecoration: "none",
-                          color: "inherit",
+                          fontFamily: "var(--font-jetbrains)",
+                          fontSize: 11,
+                          color: "var(--ink-faded)",
                         }}
                       >
-                        <div
-                          style={{
-                            fontFamily: "var(--font-jetbrains)",
-                            fontSize: 11,
-                            color: "var(--ink-faded)",
-                          }}
-                        >
-                          {format(parseISO(row.start), "MMM d")}
-                        </div>
-                        <div
-                          style={{
-                            fontFamily: "var(--font-fraunces)",
-                            fontSize: 15,
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {displayTitle(row.title, row.type)}
-                        </div>
-                        <StarRating value={eff || 0} size={16} />
-                        <span
-                          style={{
-                            color: "var(--ink-faded)",
-                            fontSize: 14,
-                          }}
-                        >
-                          ›
-                        </span>
-                      </Link>
-                    );
-                  })
+                        {row.completedAt
+                          ? format(row.completedAt, "MMM d")
+                          : row.scheduledStart
+                            ? format(row.scheduledStart, "MMM d")
+                            : "—"}
+                      </div>
+                      <div
+                        style={{
+                          fontFamily: "var(--font-fraunces)",
+                          fontSize: 15,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {displayTitle(row.title, row.type)}
+                      </div>
+                      <StarRating value={row.rating || 0} size={16} />
+                      <span
+                        style={{
+                          color: "var(--ink-faded)",
+                          fontSize: 14,
+                        }}
+                      >
+                        ›
+                      </span>
+                    </Link>
+                  ))
                 )}
               </div>
 
