@@ -1,8 +1,8 @@
 import { auth } from "@/auth";
+import { ensureUserPreferences } from "@/lib/user";
 import { PrimaryNav } from "./verdant/PrimaryNav";
 import { PlantHelper } from "./verdant/PlantHelper";
 import { FooterStrip } from "./verdant/FooterStrip";
-import { SignOutButton } from "./SignOutButton";
 
 export async function Shell({
   children,
@@ -18,24 +18,14 @@ export async function Shell({
     ? { name: session.user.name, email: session.user.email, image: session.user.image }
     : null;
   const signedIn = Boolean(session);
+  const calendarConnected = signedIn && session?.user?.id
+    ? (await ensureUserPreferences(session.user.id)).calendarConnected
+    : false;
   return (
     <div className="app-frame">
-      <PrimaryNav signedIn={signedIn} user={user} />
+      <PrimaryNav signedIn={signedIn} user={user} calendarConnected={calendarConnected} />
       <main>{children}</main>
       {signedIn && showFooter && <FooterStrip />}
-      {signedIn && (
-        <div
-          style={{
-            textAlign: "center",
-            padding: "16px 0 32px",
-            fontFamily: "var(--font-jetbrains)",
-            fontSize: 11,
-            color: "var(--ink-faded)",
-          }}
-        >
-          <SignOutButton />
-        </div>
-      )}
       {signedIn && showHelper && <PlantHelper />}
     </div>
   );

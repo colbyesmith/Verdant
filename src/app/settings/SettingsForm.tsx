@@ -58,6 +58,7 @@ export function SettingsForm(p: Props) {
   const [busy, setBusy] = useState(false);
   const [maxAutoSaved, setMaxAutoSaved] = useState<number | null>(null);
   const [twAutoSavedAt, setTwAutoSavedAt] = useState<number | null>(null);
+  const [calAutoSavedAt, setCalAutoSavedAt] = useState<number | null>(null);
 
   // Auto-save the daily-limit slider on release. Without this, dragging the
   // slider only updates local state — leaving the page loses the change and
@@ -109,6 +110,29 @@ export function SettingsForm(p: Props) {
       }
     } catch {
       setErr("Couldn't save time windows");
+    }
+  }
+
+  async function saveCalNow(value: boolean) {
+    try {
+      const res = await fetch("/api/preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ calendarConnected: value }),
+      });
+      if (res.ok) {
+        const stamp = Date.now();
+        setCalAutoSavedAt(stamp);
+        setTimeout(() => {
+          setCalAutoSavedAt((cur) => (cur === stamp ? null : cur));
+        }, 1800);
+        r.refresh();
+      } else {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        setErr(j.error || "Couldn't save calendar setting");
+      }
+    } catch {
+      setErr("Couldn't save calendar setting");
     }
   }
 
@@ -171,10 +195,10 @@ export function SettingsForm(p: Props) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
       {/* Calendars */}
-      <div className="ink-card" style={{ padding: 20 }}>
+      <div id="calendars" className="ink-card" style={{ padding: 20, scrollMarginTop: 24 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
           <CalendarIcon size={28} />
-          <div>
+          <div style={{ flex: 1 }}>
             <div className="tag">connections</div>
             <div
               style={{
@@ -186,6 +210,18 @@ export function SettingsForm(p: Props) {
               Calendars
             </div>
           </div>
+          {calAutoSavedAt && (
+            <span
+              style={{
+                fontFamily: "var(--font-fraunces)",
+                fontStyle: "italic",
+                fontSize: 13,
+                color: "var(--moss)",
+              }}
+            >
+              saved ✓
+            </span>
+          )}
         </div>
         <div
           className="ink-card soft"
@@ -221,7 +257,11 @@ export function SettingsForm(p: Props) {
           <input
             type="checkbox"
             checked={cal}
-            onChange={(e) => setCal(e.target.checked)}
+            onChange={(e) => {
+              const next = e.target.checked;
+              setCal(next);
+              void saveCalNow(next);
+            }}
             style={{ width: 18, height: 18, accentColor: "var(--moss)" }}
           />
           <span>connect Google Calendar (we&apos;ll create events for new sessions)</span>

@@ -170,6 +170,35 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .btn.ghost:hover { background: rgba(139,111,74,0.10); box-shadow: none; transform: none; }
 .btn.sm { font-size: 13px; padding: 6px 12px; }
 
+/* dropdown menu items (used by UserMenu) */
+.verdant-menuitem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  font-family: var(--font-fraunces), Georgia, serif;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+  text-decoration: none;
+  border-radius: 10px;
+  background: transparent;
+  border: 1.25px solid transparent;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+.verdant-menuitem:hover,
+.verdant-menuitem:focus-visible {
+  background: var(--paper);
+  border-color: var(--ink-soft);
+  outline: none;
+}
+.verdant-menuitem.danger { color: var(--berry); }
+.verdant-menuitem.danger:hover,
+.verdant-menuitem.danger:focus-visible { background: #f3cbc1; border-color: var(--berry); }
+
 /* chips & stamps */
 .chip {
   display: inline-flex; align-items: center; gap: 6px;

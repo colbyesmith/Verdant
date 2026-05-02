@@ -255,37 +255,49 @@ function mergeIntoDailyAgendas(
       });
     }
 
-    if (groupable.length === 1) {
-      const only = groupable[0];
-      out.push({
-        id: `sess-${only.task.id}`,
-        planTaskId: only.task.id,
-        title: only.task.title,
-        type: only.task.type,
-        start: only.start.toISOString(),
-        end: only.end.toISOString(),
-      });
-    } else if (groupable.length > 1) {
-      const first = groupable[0];
-      const last = groupable[groupable.length - 1];
-      const dayK = dayKey(first.start);
-      out.push({
-        id: `sess-day-${dayK}`,
-        planTaskId: first.task.id,
-        title: `Learning session: ${groupable.map((g) => g.task.title).join(" · ")}`,
-        type: first.task.type,
-        start: first.start.toISOString(),
-        end: last.end.toISOString(),
-        agenda: groupable.map((g) => ({
-          planTaskId: g.task.id,
-          title: g.task.title,
-          type: g.task.type,
-          minutes: Math.max(
-            15,
-            Math.round((g.end.getTime() - g.start.getTime()) / 60_000)
-          ),
-        })),
-      });
+    // Split groupable placements into clusters of strictly-contiguous tasks
+    // (prev.end === next.start). Non-contiguous placements emit separate
+    // sessions so a merged block never spans an external event sitting in
+    // the gap between placements.
+    let clusterStart = 0;
+    for (let i = 1; i <= groupable.length; i++) {
+      const continues =
+        i < groupable.length &&
+        groupable[i].start.getTime() === groupable[i - 1].end.getTime();
+      if (continues) continue;
+      const cluster = groupable.slice(clusterStart, i);
+      if (cluster.length === 1) {
+        const only = cluster[0];
+        out.push({
+          id: `sess-${only.task.id}`,
+          planTaskId: only.task.id,
+          title: only.task.title,
+          type: only.task.type,
+          start: only.start.toISOString(),
+          end: only.end.toISOString(),
+        });
+      } else {
+        const first = cluster[0];
+        const last = cluster[cluster.length - 1];
+        out.push({
+          id: `sess-${first.task.id}`,
+          planTaskId: first.task.id,
+          title: `Learning session: ${cluster.map((g) => g.task.title).join(" · ")}`,
+          type: first.task.type,
+          start: first.start.toISOString(),
+          end: last.end.toISOString(),
+          agenda: cluster.map((g) => ({
+            planTaskId: g.task.id,
+            title: g.task.title,
+            type: g.task.type,
+            minutes: Math.max(
+              15,
+              Math.round((g.end.getTime() - g.start.getTime()) / 60_000)
+            ),
+          })),
+        });
+      }
+      clusterStart = i;
     }
   }
   return out.sort(

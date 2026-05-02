@@ -1,6 +1,7 @@
 import { auth } from "@/auth";
 import { Shell } from "@/components/Shell";
 import { prisma } from "@/lib/db";
+import { ensureUserPreferences } from "@/lib/user";
 import type { SproutPlan, ScheduledSession } from "@/types/plan";
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -31,6 +32,8 @@ export default async function DashboardPage() {
   const plan = await prisma.learningPlan.findFirst({
     where: { userId: s.user.id, status: "active" },
   });
+  const pref = await ensureUserPreferences(s.user.id);
+  const calendarConnected = pref.calendarConnected;
 
   if (!plan) {
     return (
@@ -85,9 +88,16 @@ export default async function DashboardPage() {
               You don&apos;t have an active sprout yet. Plant a goal and we&apos;ll
               schedule it into your week.
             </p>
-            <Link href="/plan/new" className="btn primary">
-              plant a sprout →
-            </Link>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
+              <Link href="/plan/new" className="btn primary">
+                plant a sprout →
+              </Link>
+              {!calendarConnected && (
+                <Link href="/settings#calendars" className="btn">
+                  <CalendarIcon size={16} /> connect calendar
+                </Link>
+              )}
+            </div>
           </div>
         </div>
       </Shell>
@@ -211,6 +221,11 @@ export default async function DashboardPage() {
             </p>
           </div>
           <div style={{ display: "flex", gap: 10 }}>
+            {!calendarConnected && (
+              <Link href="/settings#calendars" className="btn">
+                <CalendarIcon size={16} /> connect calendar
+              </Link>
+            )}
             <Link href={`/plan/${plan.id}`} className="btn">
               <CalendarIcon size={16} /> open sprout
             </Link>
