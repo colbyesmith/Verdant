@@ -33,7 +33,7 @@ export default async function DashboardPage() {
     where: { userId: s.user.id, status: "active" },
   });
   const pref = await ensureUserPreferences(s.user.id);
-  const calendarConnected = pref.calendarConnected;
+  const pushToCalendar = pref.pushToCalendar;
 
   if (!plan) {
     return (
@@ -92,7 +92,7 @@ export default async function DashboardPage() {
               <Link href="/plan/new" className="btn primary">
                 plant a sprout →
               </Link>
-              {!calendarConnected && (
+              {!pushToCalendar && (
                 <Link href="/settings#calendars" className="btn">
                   <CalendarIcon size={16} /> connect calendar
                 </Link>
@@ -221,9 +221,9 @@ export default async function DashboardPage() {
             </p>
           </div>
           <div style={{ display: "flex", gap: 10 }}>
-            {!calendarConnected && (
+            {!pushToCalendar && (
               <Link href="/settings#calendars" className="btn">
-                <CalendarIcon size={16} /> connect calendar
+                <CalendarIcon size={16} /> turn on calendar push
               </Link>
             )}
             <Link href={`/plan/${plan.id}`} className="btn">

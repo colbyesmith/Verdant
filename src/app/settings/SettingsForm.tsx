@@ -16,7 +16,7 @@ import type { TimeWindows } from "@/types/plan";
 type Props = {
   maxMinutesDay: number;
   weeklyMinutesTarget: number | null;
-  calendarConnected: boolean;
+  pushToCalendar: boolean;
   timeWindows: string;
   defaultJson: string;
   userEmail?: string | null;
@@ -44,7 +44,7 @@ export function SettingsForm(p: Props) {
   const [weekly, setWeekly] = useState<string>(
     p.weeklyMinutesTarget != null ? String(p.weeklyMinutesTarget) : ""
   );
-  const [cal, setCal] = useState(p.calendarConnected);
+  const [cal, setCal] = useState(p.pushToCalendar);
   const [tw, setTw] = useState<TimeWindows>(() =>
     parseTimeWindows(p.timeWindows, p.defaultJson)
   );
@@ -118,7 +118,7 @@ export function SettingsForm(p: Props) {
       const res = await fetch("/api/preferences", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ calendarConnected: value }),
+        body: JSON.stringify({ pushToCalendar: value }),
       });
       if (res.ok) {
         const stamp = Date.now();
@@ -178,7 +178,7 @@ export function SettingsForm(p: Props) {
       body: JSON.stringify({
         maxMinutesDay: max,
         weeklyMinutesTarget,
-        calendarConnected: cal,
+        pushToCalendar: cal,
         timeWindows: tw,
       }),
     });
@@ -241,9 +241,7 @@ export function SettingsForm(p: Props) {
             </div>
             <div className="tag">primary calendar</div>
           </div>
-          <span className={cal ? "chip moss" : "chip"}>
-            {cal ? "connected" : "off"}
-          </span>
+          <span className="chip moss">connected</span>
         </div>
         <label
           style={{
@@ -264,8 +262,20 @@ export function SettingsForm(p: Props) {
             }}
             style={{ width: 18, height: 18, accentColor: "var(--moss)" }}
           />
-          <span>connect Google Calendar (we&apos;ll create events for new sessions)</span>
+          <span>push new sessions to my Google Calendar</span>
         </label>
+        <p
+          style={{
+            margin: "6px 0 0 28px",
+            fontSize: 12,
+            color: "var(--ink-faded)",
+            fontFamily: "var(--font-fraunces)",
+            fontStyle: "italic",
+            lineHeight: 1.4,
+          }}
+        >
+          turning this off pauses pushing — your Google account stays connected.
+        </p>
       </div>
 
       {/* Daily limit */}

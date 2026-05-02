@@ -10,11 +10,11 @@ type Item = { href: string; label: string; match?: (p: string) => boolean };
 export function PrimaryNav({
   signedIn,
   user,
-  calendarConnected = false,
+  pushToCalendar = false,
 }: {
   signedIn: boolean;
   user?: { name?: string | null; email?: string | null; image?: string | null } | null;
-  calendarConnected?: boolean;
+  pushToCalendar?: boolean;
 }) {
   const pathname = usePathname();
 
@@ -87,7 +87,7 @@ export function PrimaryNav({
           );
         })}
         {signedIn ? (
-          <UserMenu user={user} calendarConnected={calendarConnected} />
+          <UserMenu user={user} pushToCalendar={pushToCalendar} />
         ) : (
           <Link href="/login" className="btn primary sm">
             sign in

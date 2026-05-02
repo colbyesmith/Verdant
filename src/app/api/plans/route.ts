@@ -340,7 +340,7 @@ export async function POST(request: Request) {
           })),
         });
 
-        if (pref.calendarConnected && accessToken && schedule.length > 0) {
+        if (pref.pushToCalendar && accessToken && schedule.length > 0) {
           const planId = plan.id;
           after(async () => {
             const tBg = Date.now();

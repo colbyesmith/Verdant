@@ -7,12 +7,12 @@ import { useEffect, useRef, useState } from "react";
 
 type Props = {
   user?: { name?: string | null; email?: string | null; image?: string | null } | null;
-  calendarConnected: boolean;
+  pushToCalendar: boolean;
 };
 
 const ITEM_COUNT = 3;
 
-export function UserMenu({ user, calendarConnected }: Props) {
+export function UserMenu({ user, pushToCalendar }: Props) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -197,12 +197,12 @@ export function UserMenu({ user, calendarConnected }: Props) {
             onClick={close}
             className="verdant-menuitem"
           >
-            <span>calendar</span>
+            <span>calendar push</span>
             <span
-              className={calendarConnected ? "chip moss" : "chip"}
+              className={pushToCalendar ? "chip moss" : "chip"}
               style={{ fontSize: 10, padding: "2px 8px" }}
             >
-              {calendarConnected ? "connected" : "not connected"}
+              {pushToCalendar ? "on" : "off"}
             </span>
           </Link>
           <div
