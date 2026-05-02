@@ -1,18 +1,20 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Sprout } from "./art";
+import { UserMenu } from "./UserMenu";
 
 type Item = { href: string; label: string; match?: (p: string) => boolean };
 
 export function PrimaryNav({
   signedIn,
   user,
+  pushToCalendar = false,
 }: {
   signedIn: boolean;
   user?: { name?: string | null; email?: string | null; image?: string | null } | null;
+  pushToCalendar?: boolean;
 }) {
   const pathname = usePathname();
 
@@ -27,8 +29,6 @@ export function PrimaryNav({
 
   const isActive = (href: string) =>
     pathname === href || (href !== "/" && pathname.startsWith(href));
-
-  const initial = (user?.name || user?.email || "M")[0]?.toUpperCase() || "M";
 
   return (
     <header
@@ -87,59 +87,7 @@ export function PrimaryNav({
           );
         })}
         {signedIn ? (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              marginLeft: 16,
-              paddingLeft: 16,
-              borderLeft: "1.5px dashed var(--ink-soft)",
-            }}
-          >
-            <div
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: "50%",
-                background: "var(--sun-soft)",
-                border: "1.5px solid var(--ink)",
-                display: "grid",
-                placeItems: "center",
-                fontFamily: "var(--font-fraunces)",
-                fontWeight: 600,
-                fontSize: 14,
-                color: "var(--ink)",
-                overflow: "hidden",
-              }}
-            >
-              {user?.image ? (
-                <Image
-                  src={user.image}
-                  alt=""
-                  width={36}
-                  height={36}
-                  style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                />
-              ) : (
-                initial
-              )}
-            </div>
-            <div style={{ lineHeight: 1.1 }}>
-              <div style={{ fontSize: 14, fontWeight: 500 }}>
-                {user?.name?.split(" ")[0] || "Friend"}
-              </div>
-              <div
-                style={{
-                  fontSize: 11,
-                  color: "var(--ink-faded)",
-                  fontFamily: "var(--font-jetbrains)",
-                }}
-              >
-                {user?.email || ""}
-              </div>
-            </div>
-          </div>
+          <UserMenu user={user} pushToCalendar={pushToCalendar} />
         ) : (
           <Link href="/login" className="btn primary sm">
             sign in

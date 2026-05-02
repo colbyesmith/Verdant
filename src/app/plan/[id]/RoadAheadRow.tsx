@@ -25,11 +25,13 @@ export function RoadAheadRow({
   type,
   rating = 0,
   done,
+  overdue = false,
 }: {
   title: string;
   type: TaskType;
   rating?: number;
   done: boolean;
+  overdue?: boolean;
 }) {
   return (
     <div
@@ -40,8 +42,13 @@ export function RoadAheadRow({
         alignItems: "center",
         gap: 14,
         padding: "10px 14px",
-        background: done ? "var(--paper-deep)" : "var(--paper-warm)",
+        background: done
+          ? "var(--paper-deep)"
+          : overdue
+            ? "#f8e0db"
+            : "var(--paper-warm)",
         opacity: done ? 0.75 : 1,
+        borderColor: overdue ? "var(--berry)" : undefined,
       }}
     >
       <ToneCreature type={type} />
@@ -61,6 +68,7 @@ export function RoadAheadRow({
             {type}
           </span>
           {done && <span className="chip moss">done</span>}
+          {overdue && !done && <span className="chip blush">overdue</span>}
         </div>
       </div>
       <StarRating value={rating} size={16} />

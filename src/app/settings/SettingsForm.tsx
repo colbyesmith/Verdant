@@ -16,7 +16,7 @@ import type { TimeWindows } from "@/types/plan";
 type Props = {
   maxMinutesDay: number;
   weeklyMinutesTarget: number | null;
-  calendarConnected: boolean;
+  pushToCalendar: boolean;
   timeWindows: string;
   defaultJson: string;
   userEmail?: string | null;
@@ -44,7 +44,7 @@ export function SettingsForm(p: Props) {
   const [weekly, setWeekly] = useState<string>(
     p.weeklyMinutesTarget != null ? String(p.weeklyMinutesTarget) : ""
   );
-  const [cal, setCal] = useState(p.calendarConnected);
+  const [cal, setCal] = useState(p.pushToCalendar);
   const [tw, setTw] = useState<TimeWindows>(() =>
     parseTimeWindows(p.timeWindows, p.defaultJson)
   );
@@ -58,6 +58,7 @@ export function SettingsForm(p: Props) {
   const [busy, setBusy] = useState(false);
   const [maxAutoSaved, setMaxAutoSaved] = useState<number | null>(null);
   const [twAutoSavedAt, setTwAutoSavedAt] = useState<number | null>(null);
+  const [calAutoSavedAt, setCalAutoSavedAt] = useState<number | null>(null);
 
   // Auto-save the daily-limit slider on release. Without this, dragging the
   // slider only updates local state — leaving the page loses the change and
@@ -112,6 +113,29 @@ export function SettingsForm(p: Props) {
     }
   }
 
+  async function saveCalNow(value: boolean) {
+    try {
+      const res = await fetch("/api/preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pushToCalendar: value }),
+      });
+      if (res.ok) {
+        const stamp = Date.now();
+        setCalAutoSavedAt(stamp);
+        setTimeout(() => {
+          setCalAutoSavedAt((cur) => (cur === stamp ? null : cur));
+        }, 1800);
+        r.refresh();
+      } else {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        setErr(j.error || "Couldn't save calendar setting");
+      }
+    } catch {
+      setErr("Couldn't save calendar setting");
+    }
+  }
+
   // Nudges are decorative — persist locally so the toggle state survives reloads.
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -154,7 +178,7 @@ export function SettingsForm(p: Props) {
       body: JSON.stringify({
         maxMinutesDay: max,
         weeklyMinutesTarget,
-        calendarConnected: cal,
+        pushToCalendar: cal,
         timeWindows: tw,
       }),
     });
@@ -171,10 +195,10 @@ export function SettingsForm(p: Props) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
       {/* Calendars */}
-      <div className="ink-card" style={{ padding: 20 }}>
+      <div id="calendars" className="ink-card" style={{ padding: 20, scrollMarginTop: 24 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
           <CalendarIcon size={28} />
-          <div>
+          <div style={{ flex: 1 }}>
             <div className="tag">connections</div>
             <div
               style={{
@@ -186,6 +210,18 @@ export function SettingsForm(p: Props) {
               Calendars
             </div>
           </div>
+          {calAutoSavedAt && (
+            <span
+              style={{
+                fontFamily: "var(--font-fraunces)",
+                fontStyle: "italic",
+                fontSize: 13,
+                color: "var(--moss)",
+              }}
+            >
+              saved ✓
+            </span>
+          )}
         </div>
         <div
           className="ink-card soft"
@@ -205,9 +241,7 @@ export function SettingsForm(p: Props) {
             </div>
             <div className="tag">primary calendar</div>
           </div>
-          <span className={cal ? "chip moss" : "chip"}>
-            {cal ? "connected" : "off"}
-          </span>
+          <span className="chip moss">connected</span>
         </div>
         <label
           style={{
@@ -221,11 +255,27 @@ export function SettingsForm(p: Props) {
           <input
             type="checkbox"
             checked={cal}
-            onChange={(e) => setCal(e.target.checked)}
+            onChange={(e) => {
+              const next = e.target.checked;
+              setCal(next);
+              void saveCalNow(next);
+            }}
             style={{ width: 18, height: 18, accentColor: "var(--moss)" }}
           />
-          <span>connect Google Calendar (we&apos;ll create events for new sessions)</span>
+          <span>push new sessions to my Google Calendar</span>
         </label>
+        <p
+          style={{
+            margin: "6px 0 0 28px",
+            fontSize: 12,
+            color: "var(--ink-faded)",
+            fontFamily: "var(--font-fraunces)",
+            fontStyle: "italic",
+            lineHeight: 1.4,
+          }}
+        >
+          turning this off pauses pushing — your Google account stays connected.
+        </p>
       </div>
 
       {/* Daily limit */}

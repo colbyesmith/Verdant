@@ -63,7 +63,7 @@ model UserPreference {
   maxMinutesDay Int   @default(90)
   /// optional: user's intended weekly study minutes target (design Q4, α). null = infer from windows.
   weeklyMinutesTarget Int?
-  calendarConnected Boolean @default(false)
+  pushToCalendar Boolean @default(false)
   /// slot effectiveness: { "Mon-19:30": 4.2, ... }
   slotEffectiveness  String  @default("{}")
   /// cancellation counts per day-of-week

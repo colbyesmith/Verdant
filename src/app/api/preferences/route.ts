@@ -17,7 +17,7 @@ const patch = z.object({
   // sync so the API doesn't silently reject the lower notches of the slider.
   maxMinutesDay: z.number().min(15).max(300).optional(),
   weeklyMinutesTarget: z.number().int().min(30).max(3000).nullable().optional(),
-  calendarConnected: z.boolean().optional(),
+  pushToCalendar: z.boolean().optional(),
 });
 
 export async function GET() {
@@ -59,8 +59,8 @@ export async function PATCH(request: Request) {
   if (p.data.weeklyMinutesTarget !== undefined) {
     data.weeklyMinutesTarget = p.data.weeklyMinutesTarget;
   }
-  if (p.data.calendarConnected !== undefined) {
-    data.calendarConnected = p.data.calendarConnected;
+  if (p.data.pushToCalendar !== undefined) {
+    data.pushToCalendar = p.data.pushToCalendar;
   }
   const pref = await prisma.userPreference.upsert({
     where: { userId: s.user.id },
