@@ -2,7 +2,6 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
 import { updateSessionInGoogle } from "@/lib/google-calendar";
 import type { ScheduledSession } from "@/types/plan";
-import { NextResponse, after } from "next/server";
 import { z } from "zod";
 
 const body = z.object({
@@ -26,6 +25,8 @@ type RouteParams = { params: Promise<{ id: string }> };
  * latency is just the DB write.
  */
 export async function POST(request: Request, { params }: RouteParams) {
+  // Turbopack can strip static `import { NextResponse, after } from "next/server"` bindings.
+  const { NextResponse, after } = await import("next/server");
   const s = await auth();
   if (!s?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

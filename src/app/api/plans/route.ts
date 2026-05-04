@@ -11,7 +11,7 @@ import { seedFsrsForPlan } from "@/lib/fsrs";
 import { reviewInstanceToTask } from "@/lib/fsrs-to-tasks";
 import type { PlanTask, ScheduledSession, SproutPlan } from "@/types/plan";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
-import { NextResponse, after } from "next/server";
+import { NextResponse } from "next/server";
 import { z } from "zod";
 
 const TIMING = process.env.NODE_ENV !== "production";
@@ -81,6 +81,7 @@ export async function POST(request: Request) {
       };
       const t0 = Date.now();
       try {
+        const { after } = await import("next/server");
         // Step 1: gather context (DB prefs + Google busy + archive existing plan).
         send({
           type: "progress",
