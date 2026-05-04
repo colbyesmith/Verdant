@@ -719,6 +719,25 @@ export default async function SessionDetailPage({
             </div>
           </div>
         </div>
+
+        {/* Footer back button — saves the user a scroll-up after working through
+            the lesson content. Mirrors the top-of-page button. */}
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            marginTop: 28,
+          }}
+        >
+          <Link
+            href={`/plan/${id}`}
+            className="btn"
+            style={{ fontSize: 14, paddingLeft: 14, paddingRight: 16, gap: 8 }}
+          >
+            <span style={{ fontSize: 16, lineHeight: 1 }}>←</span>
+            back to {plan.title}
+          </Link>
+        </div>
       </div>
     </Shell>
   );
