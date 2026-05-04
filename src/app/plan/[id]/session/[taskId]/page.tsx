@@ -13,6 +13,7 @@ import {
 import { LeafSprig, Sprout } from "@/components/verdant/art";
 import { displayTitle, phaseForWeek, youtubeId } from "@/lib/phase";
 import { SessionControls } from "./SessionControls";
+import { OneTimeHint } from "@/components/verdant/OneTimeHint";
 
 function pickVideoFor(
   task: PlanTask,
@@ -343,6 +344,14 @@ export default async function SessionDetailPage({
             <div style={{ position: "sticky", top: 16, alignSelf: "start" }}>
               <YouTubeBlock videoId={video.id} caption={video.caption} />
               <div style={{ marginTop: 14 }}>
+                <OneTimeHint
+                  storageKey="verdant.tooltip.session.dismissed"
+                  emoji="🌱"
+                >
+                  When you finish a session, pick a rating first — then{" "}
+                  <strong>mark done</strong> to commit it. Your rating teaches
+                  Fern when you do your best work.
+                </OneTimeHint>
                 <SessionControls
                   planId={id}
                   taskId={taskId}
@@ -718,6 +727,25 @@ export default async function SessionDetailPage({
               )}
             </div>
           </div>
+        </div>
+
+        {/* Footer back button — saves the user a scroll-up after working through
+            the lesson content. Mirrors the top-of-page button. */}
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            marginTop: 28,
+          }}
+        >
+          <Link
+            href={`/plan/${id}`}
+            className="btn"
+            style={{ fontSize: 14, paddingLeft: 14, paddingRight: 16, gap: 8 }}
+          >
+            <span style={{ fontSize: 16, lineHeight: 1 }}>←</span>
+            back to {plan.title}
+          </Link>
         </div>
       </div>
     </Shell>

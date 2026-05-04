@@ -68,6 +68,14 @@ model UserPreference {
   slotEffectiveness  String  @default("{}")
   /// cancellation counts per day-of-week
   slotCancellations  String  @default("{}")
+  /// dashboard sprout sort mode: "deadline" | "created" | "custom"
+  sproutSortMode     String  @default("deadline")
+  /// custom drag-reorder of sprout tiles. JSON array of plan IDs in order.
+  /// Only consulted when sproutSortMode = "custom"; missing IDs sort to end.
+  sproutCustomOrder  String  @default("[]")
+  /// Timestamp when the user finished (or skipped) the onboarding modal.
+  /// Null = first-time user; the modal will gate /plan/new until set.
+  onboardedAt        DateTime?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
@@ -100,6 +108,9 @@ model LearningPlan {
   freeformNote     String?
   /// User-declared blackout date ranges, JSON: [{from: "YYYY-MM-DD", to: "YYYY-MM-DD", reason?: "..."}]
   manualBlackouts  String @default("[]")
+  /// Persistent placement rules (PlacementRule[]) applied to every packer invocation
+  /// for this plan. Populated by NL edits the user opted to "save as preference".
+  placementRules   String @default("[]")
 
   /// FSRS retention target driver: 1 (gentle, R=0.80), 2 (steady, R=0.90), 3 (focused, R=0.95).
   intensity         Int     @default(2)

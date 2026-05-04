@@ -58,6 +58,64 @@ export interface FernNote {
   body: string;
 }
 
+/**
+ * Day-of-week tokens used inside `PlacementRule` filters and targets.
+ * 0 = Mon ... 6 = Sun. The string form is what the AI emits; helpers
+ * in `placement-rules.ts` map between the two.
+ */
+export type DayOfWeek = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+
+/**
+ * Filter clause used to select which tasks/sessions a rule applies to. AND
+ * across populated fields. Empty filter matches everything.
+ */
+export interface RuleFilter {
+  type?: TaskType;
+  dayOfWeek?: DayOfWeek[];
+  weekIndex?: number;
+  phaseIndex?: number;
+  priority?: "core" | "stretch";
+  taskIds?: string[];
+}
+
+/**
+ * Declarative placement rule emitted by the NL editor (or stored as a plan
+ * preference). The AI never picks specific times; rules feed into
+ * `packWithScoring` and the packer chooses slots.
+ *
+ * Three verbs:
+ *   - "prefer": soft pull. Adds a positive score term for matching tasks
+ *     against slots that satisfy `target`. Loses to FSRS dueAt + predecessor.
+ *   - "forbid": hard exclusion. Compiled into `BusyInterval[]` covering the
+ *     `window`, so the packer's filter step rejects matching slots.
+ *   - "pin": hard, exact. Sets `locked: true` on the named session and
+ *     fixes its time. Equivalent to the legacy lock_session op + exact start.
+ */
+export type PlacementRule =
+  | {
+      kind: "prefer";
+      filter: RuleFilter;
+      target: {
+        dayOfWeek?: DayOfWeek[];
+        timeOfDay?: TimeOfDay;
+        weekIndex?: number;
+      };
+    }
+  | {
+      kind: "forbid";
+      filter: RuleFilter;
+      window: {
+        dayOfWeek?: DayOfWeek[];
+        date?: string; // YYYY-MM-DD
+        dateRange?: { from: string; to: string }; // YYYY-MM-DD inclusive
+      };
+    }
+  | {
+      kind: "pin";
+      sessionId: string;
+      start: string; // ISO
+    };
+
 export interface TimeWindow {
   start: string; // "HH:mm"
   end: string; // "HH:mm"

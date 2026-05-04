@@ -1,16 +1,21 @@
 import { auth } from "@/auth";
-import { applyNaturalLanguageEditSmart } from "@/lib/nl-schedule";
 import { prisma } from "@/lib/db";
 import { ensureUserPreferences } from "@/lib/user";
 import { rescheduleUncompleted } from "@/lib/time-windows";
 import { getBusyIntervals } from "@/lib/calendar-read";
 import { loadPlanState } from "@/lib/load-plan-state";
 import { parseBlackouts, blackoutsToBusy, type ManualBlackout } from "@/lib/blackouts";
-import { interpretEdit } from "@/lib/edit-plan";
+import { interpretEdit, placementRuleSchema } from "@/lib/edit-plan";
 import { applyEditOps } from "@/lib/apply-edit-ops";
-import { packWithScoring } from "@/lib/scoring-pack";
+import { dedupeScheduleById, packWithScoring } from "@/lib/scoring-pack";
 import { applyTaskFeedback } from "@/lib/task-feedback";
-import type { ScheduledSession, SproutPlan } from "@/types/plan";
+import { loadCrossPlanBusy } from "@/lib/cross-plan-busy";
+import type { PlacementRule, ScheduledSession, SproutPlan } from "@/types/plan";
+import {
+  compileForbidRulesToBusy,
+  parsePlacementRules,
+} from "@/lib/placement-rules";
+import { loadProjectedReviewTasks } from "@/lib/load-projected-reviews";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -19,6 +24,12 @@ const patch = z.object({
   status: z.enum(["active", "archived", "paused"]).optional(),
   scheduleJson: z.string().optional(),
   naturalLanguage: z.string().optional(),
+  /**
+   * When true, any placement rules emitted by the NL editor for this PATCH
+   * are appended to `LearningPlan.placementRules` and re-applied on every
+   * future packer run. Default false → rules are one-shot.
+   */
+  persistRules: z.boolean().optional(),
   rescheduleFrom: z.string().optional(),
   lockSession: z
     .object({ sessionId: z.string(), locked: z.boolean() })
@@ -35,6 +46,12 @@ const patch = z.object({
       })
     )
     .optional(),
+  /**
+   * Full replacement of the plan's persistent placement rules. Used by the
+   * settings UI to delete individual rules (caller sends the kept subset).
+   * The schedule is reflowed against the new rule set.
+   */
+  placementRules: z.array(placementRuleSchema).max(50).optional(),
   taskFeedback: z
     .object({
       taskId: z.string(),
@@ -113,6 +130,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   let editSummary: string | null = null;
   let outManualBlackoutsFromAI: string | null = null;
   let outPlanJsonFromAI: string | null = null;
+  let outPlacementRulesFromAI: string | null = null;
   if (p.data.naturalLanguage) {
     const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
     const sproutPlan = JSON.parse(plan.planJson || "{}") as SproutPlan;
@@ -123,49 +141,69 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       schedule: sessions,
       now,
     });
-    if (llm.ok) {
-      const pref = await ensureUserPreferences(s.user.id);
-      const tw = parseTimeWindowsJson(pref.timeWindows);
-      const slotEff = JSON.parse(pref.slotEffectiveness || "{}") as Record<
-        string,
-        number
-      >;
-      const calRead = await getBusyIntervals({
+    if (!llm.ok) {
+      // No fallback. The HuggingFace path was deleted because it bypassed
+      // every constraint the structured packer enforces; if interpretEdit
+      // can't translate the request into ops/rules, surface that to the user.
+      const reasonMap: Record<string, string> = {
+        "no-api-key": "Natural language editing requires OPENAI_API_KEY in the environment.",
+        "empty-response": "The model returned no content. Try again or rephrase.",
+        "interpret-failed": "Couldn't interpret that request. Try rephrasing it more concretely.",
+      };
+      const message = reasonMap[llm.reason] ?? llm.reason;
+      return NextResponse.json({ error: message }, { status: 400 });
+    }
+    const pref = await ensureUserPreferences(s.user.id);
+    const tw = parseTimeWindowsJson(pref.timeWindows);
+    const slotEff = JSON.parse(pref.slotEffectiveness || "{}") as Record<
+      string,
+      number
+    >;
+    const [calRead, crossPlan] = await Promise.all([
+      getBusyIntervals({
         userId: s.user.id,
         accessToken: s.accessToken,
         from: now,
         to: new Date(plan.deadline.getTime() + 864e5),
-      });
-      const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
-      const result = applyEditOps(llm.ops, {
-        plan: sproutPlan,
-        schedule: sessions,
-        manualBlackoutsJson: plan.manualBlackouts,
-        startDate: plan.startDate,
-        deadline: new Date(plan.deadline.getTime() + 864e5),
-        timeWindows: tw,
-        busy: externalBusy,
-        maxMinutesPerDay: pref.maxMinutesDay,
-        slotEffectiveness: slotEff,
-        now,
-      });
-      outSchedule = JSON.stringify(result.schedule);
-      outPlanJsonFromAI = JSON.stringify(result.plan);
-      outManualBlackoutsFromAI = result.manualBlackoutsJson;
-      editSummary = llm.summary;
-    } else {
-      // interpretEdit's structured-LLM path failed; fall back to the HF
-      // natural-language editor that returns a full updated schedule.
-      const { result: r } = await applyNaturalLanguageEditSmart(
-        p.data.naturalLanguage,
-        sessions,
-        now
+      }),
+      loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
+    ]);
+    const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
+    const persistentRules = parsePlacementRules(plan.placementRules);
+    const projectedReviews = await loadProjectedReviewTasks({
+      planId: id,
+      sproutPlan,
+      planStartDate: plan.startDate,
+    });
+    const result = applyEditOps(llm.ops, llm.rules as PlacementRule[], {
+      plan: sproutPlan,
+      schedule: sessions,
+      manualBlackoutsJson: plan.manualBlackouts,
+      startDate: plan.startDate,
+      deadline: new Date(plan.deadline.getTime() + 864e5),
+      timeWindows: tw,
+      busy: [...externalBusy, ...crossPlan.busy],
+      maxMinutesPerDay: pref.maxMinutesDay,
+      slotEffectiveness: slotEff,
+      now,
+      persistentRules,
+      projectedReviews,
+    });
+    outSchedule = JSON.stringify(result.schedule);
+    outPlanJsonFromAI = JSON.stringify(result.plan);
+    outManualBlackoutsFromAI = result.manualBlackoutsJson;
+    editSummary = llm.summary;
+    if (p.data.persistRules && llm.rules.length > 0) {
+      // Append new rules to the persistent set. Pin rules are intentionally
+      // skipped — they reference a specific sessionId and don't make sense
+      // to apply to future packer runs.
+      const toPersist = (llm.rules as PlacementRule[]).filter(
+        (r) => r.kind !== "pin"
       );
-      if (!r.ok) {
-        return NextResponse.json({ error: r.error }, { status: 400 });
-      }
-      outSchedule = JSON.stringify(r.sessions);
-      editSummary = r.message;
+      outPlacementRulesFromAI = JSON.stringify([
+        ...persistentRules,
+        ...toPersist,
+      ]);
     }
   }
   if (p.data.lockSession) {
@@ -177,6 +215,84 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     );
     outSchedule = JSON.stringify(next);
   }
+  // Direct rule replacement (settings UI uses this to delete individual rules).
+  // Reflows the future schedule against the new rule set so removing a forbid
+  // rule frees up its window and removing a prefer rule lets the packer rescore.
+  if (p.data.placementRules) {
+    const pref = await ensureUserPreferences(s.user.id);
+    const tw = parseTimeWindowsJson(pref.timeWindows);
+    const slotEff = JSON.parse(pref.slotEffectiveness || "{}") as Record<
+      string,
+      number
+    >;
+    const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
+    const sproutPlan = JSON.parse(plan.planJson || "{}") as SproutPlan;
+    const now = new Date();
+    const [calRead, crossPlan] = await Promise.all([
+      getBusyIntervals({
+        userId: s.user.id,
+        accessToken: s.accessToken,
+        from: now,
+        to: new Date(plan.deadline.getTime() + 864e5),
+      }),
+      loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
+    ]);
+    const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
+    const newRules = p.data.placementRules as PlacementRule[];
+    const deadlinePlus1 = new Date(plan.deadline.getTime() + 864e5);
+    const past = sessions.filter((sess) => new Date(sess.end) < now);
+    const lockedFuture = sessions.filter(
+      (sess) => new Date(sess.start) >= now && sess.locked
+    );
+    const placedTaskIds = new Set<string>();
+    for (const sess of [...past, ...lockedFuture]) {
+      if (sess.agenda) for (const a of sess.agenda) placedTaskIds.add(a.planTaskId);
+      else placedTaskIds.add(sess.planTaskId);
+    }
+    const projectedReviews = await loadProjectedReviewTasks({
+      planId: id,
+      sproutPlan,
+      planStartDate: plan.startDate,
+    });
+    const tasksToPack = [
+      ...(sproutPlan.tasks ?? []).filter((t) => !placedTaskIds.has(t.id)),
+      ...projectedReviews.filter((t) => !placedTaskIds.has(t.id)),
+    ];
+    const lockedAsBusy = lockedFuture.map((sess) => ({
+      start: new Date(sess.start),
+      end: new Date(sess.end),
+      calendarEventId: sess.calendarEventId ?? `verdant-locked-${sess.id}`,
+      isVerdant: true,
+    }));
+    const blackoutBusy = blackoutsToBusy(parseBlackouts(plan.manualBlackouts));
+    const forbidBusy = compileForbidRulesToBusy(newRules, {
+      startDate: now,
+      deadline: deadlinePlus1,
+    });
+    const result = packWithScoring(tasksToPack, {
+      startDate: now,
+      deadline: deadlinePlus1,
+      timeWindows: tw,
+      busy: [
+        ...externalBusy,
+        ...crossPlan.busy,
+        ...lockedAsBusy,
+        ...blackoutBusy,
+        ...forbidBusy,
+      ],
+      maxMinutesPerDay: pref.maxMinutesDay,
+      slotEffectiveness: slotEff,
+      placementRules: newRules,
+      phaseCount: (sproutPlan.phases ?? []).length,
+    });
+    const merged = dedupeScheduleById(
+      [...past, ...lockedFuture, ...result.schedule].sort(
+        (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
+      )
+    );
+    outSchedule = JSON.stringify(merged);
+    outPlacementRulesFromAI = JSON.stringify(newRules);
+  }
   // Manual blackouts: persist immediately. Triggers a reschedule on the
   // remaining unlocked future sessions (design Q4 γ-fallback).
   let outManualBlackouts: string | null = null;
@@ -187,12 +303,15 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       const tw = parseTimeWindowsJson(pref.timeWindows);
       const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
       const from = new Date();
-      const calRead = await getBusyIntervals({
-        userId: s.user.id,
-        accessToken: s.accessToken,
-        from,
-        to: new Date(plan.deadline.getTime() + 864e5),
-      });
+      const [calRead, crossPlan] = await Promise.all([
+        getBusyIntervals({
+          userId: s.user.id,
+          accessToken: s.accessToken,
+          from,
+          to: new Date(plan.deadline.getTime() + 864e5),
+        }),
+        loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
+      ]);
       const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
       const blackoutBusy = blackoutsToBusy(p.data.manualBlackouts as ManualBlackout[]);
       const rescheduled = rescheduleUncompleted(
@@ -201,7 +320,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         new Date(plan.deadline.getTime() + 864e5),
         tw,
         pref.maxMinutesDay,
-        [...externalBusy, ...blackoutBusy]
+        [...externalBusy, ...crossPlan.busy, ...blackoutBusy]
       );
       outSchedule = JSON.stringify(rescheduled);
     }
@@ -211,12 +330,15 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     const tw = parseTimeWindowsJson(pref.timeWindows);
     const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
     const from = new Date(p.data.rescheduleFrom);
-    const busyRead = await getBusyIntervals({
-      userId: s.user.id,
-      accessToken: s.accessToken,
-      from,
-      to: new Date(plan.deadline.getTime() + 864e5),
-    });
+    const [busyRead, crossPlan] = await Promise.all([
+      getBusyIntervals({
+        userId: s.user.id,
+        accessToken: s.accessToken,
+        from,
+        to: new Date(plan.deadline.getTime() + 864e5),
+      }),
+      loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
+    ]);
     const externalBusy = busyRead.intervals.filter((b) => !b.isVerdant);
     const blackoutsJson = outManualBlackouts ?? plan.manualBlackouts;
     const blackoutBusy = blackoutsToBusy(parseBlackouts(blackoutsJson || "[]"));
@@ -226,7 +348,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       new Date(plan.deadline.getTime() + 864e5),
       tw,
       pref.maxMinutesDay,
-      [...externalBusy, ...blackoutBusy]
+      [...externalBusy, ...crossPlan.busy, ...blackoutBusy]
     );
     outSchedule = JSON.stringify(rescheduled);
   }
@@ -251,16 +373,25 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       if (sess.agenda) for (const a of sess.agenda) placedTaskIds.add(a.planTaskId);
       else placedTaskIds.add(sess.planTaskId);
     }
-    const tasksToPack = (sproutPlan.tasks ?? []).filter(
-      (t) => !placedTaskIds.has(t.id)
-    );
-
-    const calRead = await getBusyIntervals({
-      userId: s.user.id,
-      accessToken: s.accessToken,
-      from: now,
-      to: new Date(plan.deadline.getTime() + 864e5),
+    const projectedReviews = await loadProjectedReviewTasks({
+      planId: id,
+      sproutPlan,
+      planStartDate: plan.startDate,
     });
+    const tasksToPack = [
+      ...(sproutPlan.tasks ?? []).filter((t) => !placedTaskIds.has(t.id)),
+      ...projectedReviews.filter((t) => !placedTaskIds.has(t.id)),
+    ];
+
+    const [calRead, crossPlan] = await Promise.all([
+      getBusyIntervals({
+        userId: s.user.id,
+        accessToken: s.accessToken,
+        from: now,
+        to: new Date(plan.deadline.getTime() + 864e5),
+      }),
+      loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
+    ]);
     const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
     const lockedAsBusy = lockedFuture.map((sess) => ({
       start: new Date(sess.start),
@@ -269,17 +400,33 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       isVerdant: true,
     }));
     const blackoutBusy = blackoutsToBusy(parseBlackouts(plan.manualBlackouts));
+    const persistentRules = parsePlacementRules(plan.placementRules);
+    const forbidBusy = compileForbidRulesToBusy(persistentRules, {
+      startDate: now,
+      deadline: new Date(plan.deadline.getTime() + 864e5),
+    });
 
     const result = packWithScoring(tasksToPack, {
       startDate: now,
       deadline: new Date(plan.deadline.getTime() + 864e5),
       timeWindows: tw,
-      busy: [...externalBusy, ...lockedAsBusy, ...blackoutBusy],
+      busy: [
+        ...externalBusy,
+        ...crossPlan.busy,
+        ...lockedAsBusy,
+        ...blackoutBusy,
+        ...forbidBusy,
+      ],
       maxMinutesPerDay: pref.maxMinutesDay,
       slotEffectiveness: slotEff,
+      initialDailyMinutesUsed: crossPlan.initialDailyMinutesUsed,
+      placementRules: persistentRules,
+      phaseCount: (sproutPlan.phases ?? []).length,
     });
-    const newSchedule = [...lockedFuture, ...result.schedule].sort(
-      (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
+    const newSchedule = dedupeScheduleById(
+      [...lockedFuture, ...result.schedule].sort(
+        (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
+      )
     );
     outSchedule = JSON.stringify(newSchedule);
     editSummary = `Rebuilt schedule. ${result.overflow.length} task(s) didn't fit.`;
@@ -308,6 +455,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     planJson?: string;
     freeformNote?: string | null;
     manualBlackouts?: string;
+    placementRules?: string;
   } = {};
   if (p.data.status !== undefined) {
     data.status = p.data.status;
@@ -325,6 +473,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     data.manualBlackouts = outManualBlackouts;
   } else if (outManualBlackoutsFromAI !== null) {
     data.manualBlackouts = outManualBlackoutsFromAI;
+  }
+  if (outPlacementRulesFromAI !== null) {
+    data.placementRules = outPlacementRulesFromAI;
   }
   const updated = await prisma.learningPlan.update({
     where: { id },

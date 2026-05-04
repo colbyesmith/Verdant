@@ -8,46 +8,48 @@ interface Props {
   weekOffset: number;
   label: string;
   calendarConnected: boolean;
-  activePlanId: string | null;
+  /** All active plan IDs — sync iterates each. Empty list hides the button. */
+  activePlanIds: string[];
 }
 
 export function ScheduleHeader({
   weekOffset,
   label,
   calendarConnected,
-  activePlanId,
+  activePlanIds,
 }: Props) {
   const r = useRouter();
   const [syncing, setSyncing] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
-  async function syncToGoogle() {
-    if (!activePlanId) return;
+  async function syncAllToGoogle() {
+    if (activePlanIds.length === 0) return;
     setSyncing(true);
     setMsg(null);
-    try {
-      const res = await fetch(`/api/plans/${activePlanId}/calendar`, {
-        method: "POST",
-      });
-      const j = (await res.json().catch(() => ({}))) as {
-        syncedCount?: number;
-        errors?: string[];
-      };
-      if (!res.ok) {
-        setMsg("sync failed");
-      } else {
-        setMsg(
-          j.syncedCount != null
-            ? `synced ${j.syncedCount} session${j.syncedCount === 1 ? "" : "s"}`
-            : "synced"
-        );
-        r.refresh();
+    let totalSynced = 0;
+    let anyErr = false;
+    for (const planId of activePlanIds) {
+      try {
+        const res = await fetch(`/api/plans/${planId}/calendar`, {
+          method: "POST",
+        });
+        const j = (await res.json().catch(() => ({}))) as {
+          syncedCount?: number;
+          errors?: string[];
+        };
+        if (!res.ok) anyErr = true;
+        else totalSynced += j.syncedCount ?? 0;
+      } catch {
+        anyErr = true;
       }
-    } catch {
-      setMsg("sync failed");
-    } finally {
-      setSyncing(false);
     }
+    setMsg(
+      anyErr
+        ? "some sprouts failed to sync"
+        : `synced ${totalSynced} session${totalSynced === 1 ? "" : "s"}`
+    );
+    setSyncing(false);
+    r.refresh();
   }
 
   return (
@@ -124,11 +126,11 @@ export function ScheduleHeader({
             today
           </Link>
         )}
-        {activePlanId && (
+        {activePlanIds.length > 0 && (
           <button
             type="button"
             className="btn"
-            onClick={syncToGoogle}
+            onClick={syncAllToGoogle}
             disabled={syncing}
           >
             {syncing ? "syncing…" : "↻ sync to Google"}

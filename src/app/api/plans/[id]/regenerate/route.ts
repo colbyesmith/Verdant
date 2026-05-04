@@ -6,6 +6,11 @@ import { getBusyIntervals } from "@/lib/calendar-read";
 import { summarizeAvailability } from "@/lib/availability-summary";
 import { packWithScoring } from "@/lib/scoring-pack";
 import { parseBlackouts, blackoutsToBusy } from "@/lib/blackouts";
+import {
+  compileForbidRulesToBusy,
+  parsePlacementRules,
+} from "@/lib/placement-rules";
+import { loadProjectedReviewTasks } from "@/lib/load-projected-reviews";
 import type { ScheduledSession, SproutPlan } from "@/types/plan";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
 import { NextResponse } from "next/server";
@@ -107,7 +112,17 @@ export async function POST(request: Request, { params }: RouteParams) {
     if (sess.agenda) for (const a of sess.agenda) placedTaskIds.add(a.planTaskId);
     else placedTaskIds.add(sess.planTaskId);
   }
-  const tasksToPack = sproutOut.tasks.filter((t) => !placedTaskIds.has(t.id));
+  // Reviews live as ReviewInstance rows (not in sproutOut.tasks). Without
+  // this, regenerate quietly drops every projected review.
+  const projectedReviews = await loadProjectedReviewTasks({
+    planId: id,
+    sproutPlan: sproutOut,
+    planStartDate: plan.startDate,
+  });
+  const tasksToPack = [
+    ...sproutOut.tasks.filter((t) => !placedTaskIds.has(t.id)),
+    ...projectedReviews.filter((t) => !placedTaskIds.has(t.id)),
+  ];
 
   const lockedAsBusy = lockedFuture.map((sess) => ({
     start: new Date(sess.start),
@@ -116,13 +131,21 @@ export async function POST(request: Request, { params }: RouteParams) {
     isVerdant: true,
   }));
 
+  const persistentRules = parsePlacementRules(plan.placementRules);
+  const forbidBusy = compileForbidRulesToBusy(persistentRules, {
+    startDate,
+    deadline,
+  });
+
   const result = packWithScoring(tasksToPack, {
     startDate,
     deadline,
     timeWindows: tw,
-    busy: [...externalBusy, ...lockedAsBusy, ...blackoutBusy],
+    busy: [...externalBusy, ...lockedAsBusy, ...blackoutBusy, ...forbidBusy],
     maxMinutesPerDay: pref.maxMinutesDay,
     slotEffectiveness,
+    placementRules: persistentRules,
+    phaseCount: sproutOut.phases.length,
   });
   const newSchedule = [...lockedFuture, ...result.schedule].sort(
     (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()

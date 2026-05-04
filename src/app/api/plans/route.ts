@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db";
 import { ensureUserPreferences } from "@/lib/user";
 import { packWithScoring } from "@/lib/scoring-pack";
 import { getBusyIntervals } from "@/lib/calendar-read";
+import { loadCrossPlanBusy } from "@/lib/cross-plan-busy";
 import { summarizeAvailability } from "@/lib/availability-summary";
 import { seedFsrsForPlan } from "@/lib/fsrs";
 import { reviewInstanceToTask } from "@/lib/fsrs-to-tasks";
@@ -24,7 +25,6 @@ const createBody = z.object({
   startDate: z.string().optional(),
   initialResources: z.array(z.string().min(1)).min(0).max(20),
   freeformNote: z.string().max(2000).optional(),
-  replaceActive: z.boolean().optional().default(true),
   /** FSRS retention driver. 1=gentle (R=0.80), 2=steady (R=0.90), 3=focused (R=0.95). */
   intensity: z.number().int().min(1).max(3).optional().default(2),
   /** FSRS post-deadline behavior. */
@@ -58,7 +58,6 @@ export async function POST(request: Request) {
   const {
     targetSkill,
     initialResources,
-    replaceActive,
     freeformNote,
     intensity,
     postDeadlineMode,
@@ -90,26 +89,10 @@ export async function POST(request: Request) {
           label: "peeking at your garden",
         });
 
-        const archiveOrCheck = replaceActive
-          ? prisma.learningPlan
-              .updateMany({
-                where: { userId, status: "active" },
-                data: { status: "archived" },
-              })
-              .then(() => null as null | { error: string })
-          : prisma.learningPlan
-              .findFirst({ where: { userId, status: "active" } })
-              .then((existing) =>
-                existing
-                  ? {
-                      error:
-                        "You already have an active plan. Set replaceActive or archive it first.",
-                    }
-                  : null
-              );
-
-        const [archiveCheck, pref, busyResult] = await Promise.all([
-          archiveOrCheck,
+        // Multi-sprout: every other active plan's schedule is hard busy +
+        // already-consumed daily minutes. No singleton gate anymore.
+        const [crossPlan, pref, busyResult] = await Promise.all([
+          loadCrossPlanBusy({ userId, excludePlanId: null }),
           ensureUserPreferences(userId),
           getBusyIntervals({
             userId,
@@ -118,12 +101,7 @@ export async function POST(request: Request) {
             to: new Date(deadline.getTime() + 86_400_000),
           }),
         ]);
-        tick("parallel(archive+prefs+busy)", t0);
-
-        if (archiveCheck) {
-          send({ type: "error", message: archiveCheck.error });
-          return;
-        }
+        tick("parallel(crossPlan+prefs+busy)", t0);
 
         const timeWindows = parseTimeWindowsJson(pref.timeWindows);
         const maxM = pref.maxMinutesDay;
@@ -131,6 +109,7 @@ export async function POST(request: Request) {
           pref.slotEffectiveness || "{}"
         ) as Record<string, number>;
         const externalBusy = busyResult.intervals.filter((b) => !b.isVerdant);
+
         const days = Math.max(
           1,
           Math.ceil((deadline.getTime() - startDate.getTime()) / 86_400_000)
@@ -140,7 +119,7 @@ export async function POST(request: Request) {
           startDate,
           weeks,
           timeWindows,
-          busy: externalBusy,
+          busy: [...externalBusy, ...crossPlan.busy],
           slotEffectiveness,
         });
 
@@ -178,9 +157,10 @@ export async function POST(request: Request) {
           startDate,
           deadline,
           timeWindows,
-          busy: externalBusy,
+          busy: [...externalBusy, ...crossPlan.busy],
           maxMinutesPerDay: maxM,
           slotEffectiveness,
+          initialDailyMinutesUsed: crossPlan.initialDailyMinutesUsed,
         };
         const tPack = Date.now();
         // Pass 1: lessons + milestones only.

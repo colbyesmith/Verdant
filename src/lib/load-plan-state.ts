@@ -9,6 +9,7 @@ import { getBusyIntervals } from "@/lib/calendar-read";
 import { reconcileDrift, type DriftResult } from "@/lib/sync-drift";
 import { findConflicts, type ConflictReport } from "@/lib/conflicts";
 import { parseBlackouts, blackoutsToBusy } from "@/lib/blackouts";
+import { dedupeScheduleById } from "@/lib/scoring-pack";
 import type { LearningPlan, TaskCompletion } from "@prisma/client";
 import type { ScheduledSession } from "@/types/plan";
 
@@ -50,7 +51,13 @@ export async function loadPlanState(args: {
   const blackoutBusy = blackoutsToBusy(parseBlackouts(plan.manualBlackouts));
   const busy = [...calendarRead.intervals, ...blackoutBusy];
 
-  const stored = JSON.parse(plan.scheduleJson || "[]") as ScheduledSession[];
+  // Defensive dedup-on-read: if any prior write left the persisted scheduleJson
+  // with duplicate session ids (collision in `sess-${taskId}` after a merge),
+  // strip them here so React keys don't blow up downstream. First occurrence
+  // wins. The next persistence cycle writes the cleaned shape back.
+  const stored = dedupeScheduleById(
+    JSON.parse(plan.scheduleJson || "[]") as ScheduledSession[]
+  );
   // CRITICAL: only reconcile drift when the calendar fetch actually succeeded.
   // If the access token is expired / API is off, we'd otherwise see zero
   // Verdant events and conclude every synced session was deleted, wiping the

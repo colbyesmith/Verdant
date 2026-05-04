@@ -7,12 +7,17 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { format, parseISO, differenceInCalendarDays, isSameDay } from "date-fns";
 import { Sprout, CalendarIcon } from "@/components/verdant/art";
-import { SproutCard } from "@/components/verdant/SproutCard";
 import {
   TodayTimeline,
   type TimelineEvent,
 } from "@/components/verdant/TodayTimeline";
 import { displayTitle } from "@/lib/phase";
+import {
+  SproutGrid,
+  type SortMode,
+  type SproutGridItem,
+} from "@/components/verdant/SproutGrid";
+import { colorForSprout } from "@/lib/sprout-color";
 
 function timeOfDay(iso: string) {
   return format(parseISO(iso), "HH:mm");
@@ -29,13 +34,17 @@ export default async function DashboardPage() {
   if (!s?.user?.id) {
     redirect("/login");
   }
-  const plan = await prisma.learningPlan.findFirst({
-    where: { userId: s.user.id, status: "active" },
-  });
-  const pref = await ensureUserPreferences(s.user.id);
+  const [plans, pref] = await Promise.all([
+    prisma.learningPlan.findMany({
+      where: { userId: s.user.id, status: "active" },
+      orderBy: { createdAt: "desc" },
+    }),
+    ensureUserPreferences(s.user.id),
+  ]);
   const pushToCalendar = pref.pushToCalendar;
 
-  if (!plan) {
+  // No active sprouts: keep the welcome state from before.
+  if (plans.length === 0) {
     return (
       <Shell>
         <div style={{ padding: "12px 36px 60px" }}>
@@ -94,7 +103,7 @@ export default async function DashboardPage() {
               </Link>
               {!pushToCalendar && (
                 <Link href="/settings#calendars" className="btn">
-                  <CalendarIcon size={16} /> connect calendar
+                  <CalendarIcon size={16} /> turn on calendar push
                 </Link>
               )}
             </div>
@@ -104,82 +113,110 @@ export default async function DashboardPage() {
     );
   }
 
-  const sprout: SproutPlan = JSON.parse(plan.planJson) as SproutPlan;
-  const schedule: ScheduledSession[] = JSON.parse(
-    plan.scheduleJson || "[]"
-  ) as ScheduledSession[];
+  // Pull all completion records for these plans in one query.
   const completions = await prisma.taskCompletion.findMany({
-    where: { planId: plan.id },
+    where: { planId: { in: plans.map((p) => p.id) } },
   });
-  const doneIds = new Set(
-    completions.filter((c) => c.completed).map((c) => c.taskId)
-  );
-
-  const totalTasks = sprout.tasks?.length || schedule.length || 1;
-  const doneCount = sprout.tasks?.filter((t) => doneIds.has(t.id)).length || 0;
-  const growth = Math.max(0.05, Math.min(1, doneCount / totalTasks));
+  const doneByPlan = new Map<string, Set<string>>();
+  for (const c of completions) {
+    if (!c.completed) continue;
+    const set = doneByPlan.get(c.planId) ?? new Set<string>();
+    set.add(c.taskId);
+    doneByPlan.set(c.planId, set);
+  }
 
   const now = new Date();
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
-  const deadline = new Date(plan.deadline);
-  const daysToBloom = differenceInCalendarDays(deadline, now);
 
-  // Today's events
-  const todaySessions = schedule.filter((row) => isSameDay(parseISO(row.start), now));
-  const events: TimelineEvent[] = todaySessions.map((row) => {
-    const taskId =
-      row.agenda && row.agenda.length > 0
-        ? row.agenda[0].planTaskId
-        : row.planTaskId;
-    return {
-      id: row.id,
-      title: displayTitle(row.title, row.type),
-      sprout: plan.title,
-      type: classifyType(row.type),
-      start: timeOfDay(row.start),
-      end: timeOfDay(row.end),
-      href: taskId ? `/plan/${plan.id}/session/${taskId}` : undefined,
-    };
-  });
-
-  // up next: next future session today (or any next future)
-  const futureToday = events
-    .filter((e) => {
-      const [h, m] = e.start.split(":").map(Number);
-      return h * 60 + m >= nowMinutes;
-    })
-    .sort((a, b) => a.start.localeCompare(b.start));
-  const upNext = futureToday[0];
-
-  // Upcoming for cards
-  const upcomingCount = schedule.filter(
-    (row) => parseISO(row.end) >= now
-  ).length;
-
-  // Tags from skill text
-  const tags = (plan.targetSkill || plan.title)
-    .split(/[\s,/–-]+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((t) => t.toLowerCase());
-
-  // Weekly rhythm: count minutes per weekday across all schedule entries within +/- 7 days
+  // Build per-sprout grid items + collect today's events + weekly minutes,
+  // all aggregated across plans in one pass.
+  const items: SproutGridItem[] = [];
+  const events: TimelineEvent[] = [];
   const weekStart = new Date(now);
   weekStart.setHours(0, 0, 0, 0);
   weekStart.setDate(weekStart.getDate() - weekStart.getDay() + 1); // Monday
-  const dayLabels = ["M", "T", "W", "T", "F", "S", "S"];
+
+  // dayMins: per-weekday total minutes; perPlanDayMins: same broken down by plan
+  // so the bar can show stacked color contributions.
   const dayMins = [0, 0, 0, 0, 0, 0, 0];
-  for (const row of schedule) {
-    const start = parseISO(row.start);
-    const end = parseISO(row.end);
-    const idx = (start.getDay() + 6) % 7; // Monday=0
-    const diffDays = differenceInCalendarDays(start, weekStart);
-    if (diffDays >= 0 && diffDays < 7) {
-      dayMins[idx] += Math.max(0, (end.getTime() - start.getTime()) / 60000);
+  const perPlanDayMins = new Map<string, number[]>();
+  let upcomingCount = 0;
+
+  for (const plan of plans) {
+    const sprout: SproutPlan = JSON.parse(plan.planJson) as SproutPlan;
+    const schedule: ScheduledSession[] = JSON.parse(
+      plan.scheduleJson || "[]"
+    ) as ScheduledSession[];
+    const done = doneByPlan.get(plan.id) ?? new Set<string>();
+    const totalTasks = sprout.tasks?.length || schedule.length || 1;
+    const doneCount = sprout.tasks?.filter((t) => done.has(t.id)).length || 0;
+    const growth = Math.max(0.05, Math.min(1, doneCount / totalTasks));
+    const daysToBloom = Math.max(
+      0,
+      differenceInCalendarDays(new Date(plan.deadline), now)
+    );
+    const tags = (plan.targetSkill || plan.title)
+      .split(/[\s,/–-]+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((t) => t.toLowerCase());
+    items.push({
+      id: plan.id,
+      title: plan.title,
+      summary: sprout.summary,
+      growth,
+      daysToBloom,
+      tags,
+      mood: growth < 0.2 ? "sleepy" : "happy",
+      createdAtISO: plan.createdAt.toISOString(),
+      deadlineISO: plan.deadline.toISOString(),
+    });
+
+    // Today's events (across all sprouts).
+    for (const row of schedule) {
+      const start = parseISO(row.start);
+      const end = parseISO(row.end);
+      if (isSameDay(start, now)) {
+        const taskId =
+          row.agenda && row.agenda.length > 0
+            ? row.agenda[0].planTaskId
+            : row.planTaskId;
+        events.push({
+          id: row.id,
+          title: displayTitle(row.title, row.type),
+          sprout: plan.title,
+          type: classifyType(row.type),
+          start: timeOfDay(row.start),
+          end: timeOfDay(row.end),
+          href: taskId ? `/plan/${plan.id}/session/${taskId}` : undefined,
+        });
+      }
+      if (end >= now) upcomingCount++;
+      // Weekly rhythm: minutes per weekday in the current week.
+      const idx = (start.getDay() + 6) % 7; // Mon=0
+      const diffDays = differenceInCalendarDays(start, weekStart);
+      if (diffDays >= 0 && diffDays < 7) {
+        const minutes = Math.max(0, (end.getTime() - start.getTime()) / 60_000);
+        dayMins[idx] += minutes;
+        const arr = perPlanDayMins.get(plan.id) ?? [0, 0, 0, 0, 0, 0, 0];
+        arr[idx] += minutes;
+        perPlanDayMins.set(plan.id, arr);
+      }
     }
   }
-  const maxMins = Math.max(140, ...dayMins);
 
+  // Sort today's events chronologically across all sprouts.
+  events.sort((a, b) => a.start.localeCompare(b.start));
+
+  // Up next: next future event today.
+  const futureToday = events.filter((e) => {
+    const [h, m] = e.start.split(":").map(Number);
+    return h * 60 + m >= nowMinutes;
+  });
+  const upNext = futureToday[0];
+
+  const maxMins = Math.max(140, ...dayMins);
+  const dayLabels = ["M", "T", "W", "T", "F", "S", "S"];
   const niceDay = format(now, "EEEE, MMMM d");
 
   return (
@@ -226,9 +263,6 @@ export default async function DashboardPage() {
                 <CalendarIcon size={16} /> turn on calendar push
               </Link>
             )}
-            <Link href={`/plan/${plan.id}`} className="btn">
-              <CalendarIcon size={16} /> open sprout
-            </Link>
             <Link href="/plan/new" className="btn primary">
               + plant a sprout
             </Link>
@@ -258,67 +292,20 @@ export default async function DashboardPage() {
             <span style={{ fontStyle: "italic", color: "var(--moss-deep)" }}>garden</span>
           </h2>
           <div className="hand" style={{ fontSize: 14, color: "var(--ink-faded)" }}>
-            1 sprout growing · {upcomingCount} upcoming session
-            {upcomingCount === 1 ? "" : "s"}
+            {plans.length} sprout{plans.length === 1 ? "" : "s"} growing ·{" "}
+            {upcomingCount} upcoming session{upcomingCount === 1 ? "" : "s"}
           </div>
         </div>
 
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(3, 1fr)",
-            gap: 24,
-          }}
-        >
-          <SproutCard
-            href={`/plan/${plan.id}`}
-            title={plan.title}
-            summary={sprout.summary}
-            growth={growth}
-            daysToBloom={daysToBloom}
-            tags={tags.length > 0 ? tags : ["learning"]}
-            mood={growth < 0.2 ? "sleepy" : "happy"}
-          />
-          <Link
-            href="/plan/new"
-            className="dotted"
-            style={{
-              background: "transparent",
-              padding: 24,
-              minHeight: 320,
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 12,
-              color: "var(--ink-faded)",
-              textDecoration: "none",
-            }}
-          >
-            <div
-              style={{
-                width: 72,
-                height: 72,
-                borderRadius: "50%",
-                background: "var(--paper-warm)",
-                border: "1.5px dashed var(--ink-soft)",
-                display: "grid",
-                placeItems: "center",
-                fontFamily: "var(--font-fraunces)",
-                fontSize: 36,
-                color: "var(--ink-faded)",
-              }}
-            >
-              +
-            </div>
-            <div className="hand" style={{ fontSize: 15, color: "var(--ink-soft)" }}>
-              an empty plot
-            </div>
-            <div style={{ fontSize: 13 }}>plant something new</div>
-          </Link>
-        </div>
+        <SproutGrid
+          sprouts={items}
+          initialSortMode={pref.sproutSortMode as SortMode}
+          initialCustomOrder={
+            JSON.parse(pref.sproutCustomOrder || "[]") as string[]
+          }
+        />
 
-        {/* weekly rhythm */}
+        {/* weekly rhythm — bars stacked by sprout color */}
         <div style={{ marginTop: 36 }}>
           <h2
             className="serif-display"
@@ -338,12 +325,12 @@ export default async function DashboardPage() {
             >
               {dayMins.map((mins, i) => {
                 const heightPct = (mins / maxMins) * 100;
-                const color =
-                  mins >= 90
-                    ? "var(--moss)"
-                    : mins >= 50
-                      ? "var(--fern)"
-                      : "var(--sprout)";
+                // Build the per-plan stack within this day so the bar visually
+                // shows whose minutes contribute.
+                const stacks: { planId: string; minutes: number }[] = [];
+                for (const [pid, arr] of perPlanDayMins) {
+                  if (arr[i] > 0) stacks.push({ planId: pid, minutes: arr[i] });
+                }
                 return (
                   <div
                     key={i}
@@ -369,11 +356,31 @@ export default async function DashboardPage() {
                       style={{
                         width: "70%",
                         height: `${Math.max(2, heightPct)}%`,
-                        background: mins === 0 ? "var(--paper-deep)" : color,
                         border: "1.5px solid var(--ink)",
                         borderRadius: "12px 12px 4px 4px",
+                        background:
+                          mins === 0 ? "var(--paper-deep)" : "transparent",
+                        display: "flex",
+                        flexDirection: "column-reverse",
+                        overflow: "hidden",
                       }}
-                    />
+                    >
+                      {stacks.map((seg) => {
+                        const c = colorForSprout(seg.planId);
+                        const pct = mins > 0 ? (seg.minutes / mins) * 100 : 0;
+                        return (
+                          <div
+                            key={seg.planId}
+                            style={{
+                              width: "100%",
+                              height: `${pct}%`,
+                              background: c.swatch,
+                            }}
+                            title={`${Math.round(seg.minutes)} min`}
+                          />
+                        );
+                      })}
+                    </div>
                     <div
                       style={{
                         fontFamily: "var(--font-fraunces)",
@@ -396,7 +403,9 @@ export default async function DashboardPage() {
                 textAlign: "center",
               }}
             >
-              the bigger leaves are days with more practice planned.
+              {plans.length > 1
+                ? "stacked colors show how each sprout contributes to the week."
+                : "the bigger leaves are days with more practice planned."}
             </div>
           </div>
         </div>
