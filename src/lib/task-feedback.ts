@@ -7,6 +7,7 @@ import { parseBlackouts, blackoutsToBusy } from "@/lib/blackouts";
 import { applyRating, projectReviewChain, type UiRating } from "@/lib/fsrs";
 import { reviewInstanceToTask } from "@/lib/fsrs-to-tasks";
 import { packIntoExistingSchedule } from "@/lib/scoring-pack";
+import { loadCrossPlanBusy } from "@/lib/cross-plan-busy";
 import { smoothUpdate, slotKeyFromIso } from "@/lib/effectiveness";
 import type { ScheduledSession, SproutPlan } from "@/types/plan";
 
@@ -122,17 +123,24 @@ export async function applyTaskFeedback(args: {
     deadlinePlus1: Date;
     maxMinutesPerDay: number;
     slotEffectiveness: Record<string, number>;
+    crossPlanBusy: Awaited<ReturnType<typeof loadCrossPlanBusy>>["busy"];
+    crossPlanDailyMinutes: Awaited<
+      ReturnType<typeof loadCrossPlanBusy>
+    >["initialDailyMinutesUsed"];
   } | null = null;
   async function placementCtx() {
     if (_ctx) return _ctx;
-    const pref = await ensureUserPreferences(userId);
+    const [pref, calRead, crossPlan] = await Promise.all([
+      ensureUserPreferences(userId),
+      getBusyIntervals({
+        userId,
+        accessToken,
+        from: now,
+        to: new Date(plan.deadline.getTime() + 864e5),
+      }),
+      loadCrossPlanBusy({ userId, excludePlanId: planId }),
+    ]);
     const tw = parseTimeWindowsJson(pref.timeWindows);
-    const calRead = await getBusyIntervals({
-      userId,
-      accessToken,
-      from: now,
-      to: new Date(plan.deadline.getTime() + 864e5),
-    });
     const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
     const blackoutBusy = blackoutsToBusy(parseBlackouts(plan.manualBlackouts));
     const slotEffectiveness = JSON.parse(
@@ -145,6 +153,8 @@ export async function applyTaskFeedback(args: {
       deadlinePlus1: new Date(plan.deadline.getTime() + 864e5),
       maxMinutesPerDay: pref.maxMinutesDay,
       slotEffectiveness,
+      crossPlanBusy: crossPlan.busy,
+      crossPlanDailyMinutes: crossPlan.initialDailyMinutesUsed,
     };
     return _ctx;
   }
@@ -211,9 +221,10 @@ export async function applyTaskFeedback(args: {
         startDate: now,
         deadline: ctx.deadlinePlus1,
         timeWindows: ctx.timeWindows,
-        externalBusy: [...ctx.externalBusy, ...ctx.blackoutBusy],
+        externalBusy: [...ctx.externalBusy, ...ctx.crossPlanBusy, ...ctx.blackoutBusy],
         maxMinutesPerDay: ctx.maxMinutesPerDay,
         slotEffectiveness: ctx.slotEffectiveness,
+        extraDailyMinutesUsed: ctx.crossPlanDailyMinutes,
       });
       outSchedule = result.schedule;
     } else if (rating != null) {
@@ -279,9 +290,10 @@ export async function applyTaskFeedback(args: {
         startDate: now,
         deadline: ctx.deadlinePlus1,
         timeWindows: ctx.timeWindows,
-        externalBusy: [...ctx.externalBusy, ...ctx.blackoutBusy],
+        externalBusy: [...ctx.externalBusy, ...ctx.crossPlanBusy, ...ctx.blackoutBusy],
         maxMinutesPerDay: ctx.maxMinutesPerDay,
         slotEffectiveness: ctx.slotEffectiveness,
+        extraDailyMinutesUsed: ctx.crossPlanDailyMinutes,
       });
       outSchedule = result.schedule;
     }
@@ -323,6 +335,10 @@ async function advanceFsrsAndPlaceNewReviews(args: {
     deadlinePlus1: Date;
     maxMinutesPerDay: number;
     slotEffectiveness: Record<string, number>;
+    crossPlanBusy: Awaited<ReturnType<typeof loadCrossPlanBusy>>["busy"];
+    crossPlanDailyMinutes: Awaited<
+      ReturnType<typeof loadCrossPlanBusy>
+    >["initialDailyMinutesUsed"];
   }>;
 }): Promise<ScheduledSession[]> {
   const { plan, lessonState: ls, rating, now, schedule } = args;
@@ -444,9 +460,10 @@ async function advanceFsrsAndPlaceNewReviews(args: {
     startDate: now,
     deadline: ctx.deadlinePlus1,
     timeWindows: ctx.timeWindows,
-    externalBusy: [...ctx.externalBusy, ...ctx.blackoutBusy],
+    externalBusy: [...ctx.externalBusy, ...ctx.crossPlanBusy, ...ctx.blackoutBusy],
     maxMinutesPerDay: ctx.maxMinutesPerDay,
     slotEffectiveness: ctx.slotEffectiveness,
+    extraDailyMinutesUsed: ctx.crossPlanDailyMinutes,
   });
   return packed.schedule;
 }

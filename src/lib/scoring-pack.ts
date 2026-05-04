@@ -334,6 +334,13 @@ export function packIntoExistingSchedule(args: {
   externalBusy: BusyInterval[];
   maxMinutesPerDay: number;
   slotEffectiveness: Record<string, number>;
+  /**
+   * Optional pre-existing per-day minutes from sources outside `existingSchedule`
+   * — typically OTHER active plans' schedules (multi-sprout shared-cap support).
+   * Merged into the seed map alongside what's computed from `existingSchedule`,
+   * so the daily cap reflects the user's full cross-plan picture.
+   */
+  extraDailyMinutesUsed?: Map<string, number>;
 }): { schedule: ScheduledSession[]; overflow: PlanTask[] } {
   const existingAsBusy: BusyInterval[] = args.existingSchedule.map((sess) => ({
     start: new Date(sess.start),
@@ -344,7 +351,9 @@ export function packIntoExistingSchedule(args: {
 
   // Per-day minutes already consumed by existing entries. Sum each entry's
   // duration (in minutes) into the bucket for its local-day key.
-  const initialDailyMinutesUsed = new Map<string, number>();
+  const initialDailyMinutesUsed = new Map<string, number>(
+    args.extraDailyMinutesUsed ?? []
+  );
   for (const sess of args.existingSchedule) {
     const start = new Date(sess.start);
     const end = new Date(sess.end);

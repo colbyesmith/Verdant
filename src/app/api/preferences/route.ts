@@ -18,6 +18,10 @@ const patch = z.object({
   maxMinutesDay: z.number().min(15).max(300).optional(),
   weeklyMinutesTarget: z.number().int().min(30).max(3000).nullable().optional(),
   pushToCalendar: z.boolean().optional(),
+  /** Dashboard sprout sort mode. Dragging tiles client-side flips this to "custom". */
+  sproutSortMode: z.enum(["deadline", "created", "custom"]).optional(),
+  /** Custom-mode reorder. Plan IDs in display order; missing IDs sort to end. */
+  sproutCustomOrder: z.array(z.string()).optional(),
 });
 
 export async function GET() {
@@ -61,6 +65,12 @@ export async function PATCH(request: Request) {
   }
   if (p.data.pushToCalendar !== undefined) {
     data.pushToCalendar = p.data.pushToCalendar;
+  }
+  if (p.data.sproutSortMode !== undefined) {
+    data.sproutSortMode = p.data.sproutSortMode;
+  }
+  if (p.data.sproutCustomOrder !== undefined) {
+    data.sproutCustomOrder = JSON.stringify(p.data.sproutCustomOrder);
   }
   const pref = await prisma.userPreference.upsert({
     where: { userId: s.user.id },

@@ -56,11 +56,18 @@ interface Phase {
   label: string;
 }
 
+interface OverflowTask {
+  id: string;
+  title: string;
+  priority: "core" | "stretch";
+}
+
 interface DoneEvent {
   type: "done";
   step: number;
   of: number;
   plan: { id: string };
+  overflow?: OverflowTask[];
 }
 
 interface ProgressEvent {
@@ -92,6 +99,16 @@ export function NewPlanForm() {
   const [phase, setPhase] = useState<Phase | null>(null);
   const [whimsy, setWhimsy] = useState(WHIMSICAL_WORDS[0]);
   const wordIdxRef = useRef(0);
+  // When the packer can't fit every task before the deadline, the streamed
+  // `done` event includes an `overflow` array. We pause navigation, show the
+  // user what didn't fit, and let them either "place anyway" (overbook the
+  // daily cap for those specific tasks via /api/plans/[id]/force-place) or
+  // "continue without them" (the tasks stay unscheduled in to-do).
+  const [overflowState, setOverflowState] = useState<{
+    planId: string;
+    tasks: OverflowTask[];
+  } | null>(null);
+  const [overflowBusy, setOverflowBusy] = useState(false);
 
   // Whimsical word ticker — picks a fresh word every ~700ms during saving.
   // Walks a shuffled cursor instead of pure random so users don't see repeats.
@@ -128,7 +145,6 @@ export function NewPlanForm() {
         deadline,
         initialResources: cleanResources,
         freeformNote: noteTrimmed.length > 0 ? noteTrimmed : undefined,
-        replaceActive: true,
         intensity,
         postDeadlineMode,
       }),
@@ -187,14 +203,45 @@ export function NewPlanForm() {
     }
 
     if (done?.plan?.id) {
-      r.push(`/plan/${done.plan.id}`);
+      const overflow = done.overflow ?? [];
+      if (overflow.length > 0) {
+        // Pause here — let the user decide whether to overbook the daily cap
+        // or accept the partial schedule.
+        setOverflowState({ planId: done.plan.id, tasks: overflow });
+      } else {
+        r.push(`/plan/${done.plan.id}`);
+      }
     } else {
       setStatus("err");
       setError("Plan generation finished without a plan id.");
     }
   }
 
+  /** Force-place every overflow task into the schedule, ignoring daily cap. */
+  async function overbookOverflow() {
+    if (!overflowState) return;
+    setOverflowBusy(true);
+    try {
+      await fetch(`/api/plans/${overflowState.planId}/force-place`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          taskIds: overflowState.tasks.map((t) => t.id),
+        }),
+      });
+    } catch {
+      /* non-fatal — still navigate so the user can see what landed */
+    }
+    r.push(`/plan/${overflowState.planId}`);
+  }
+
+  function continueWithoutOverflow() {
+    if (!overflowState) return;
+    r.push(`/plan/${overflowState.planId}`);
+  }
+
   return (
+    <>
     <div style={{ padding: "20px 36px 60px", display: "grid", placeItems: "start center" }}>
       <div className="journal-edge" style={{ width: "min(1100px, 100%)", padding: "40px 48px" }}>
         <form onSubmit={onSubmit}>
@@ -533,5 +580,112 @@ export function NewPlanForm() {
         </form>
       </div>
     </div>
+
+    {overflowState && (
+      <div
+        role="dialog"
+        aria-modal="true"
+        style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(43, 36, 24, 0.45)",
+          display: "grid",
+          placeItems: "center",
+          zIndex: 100,
+          padding: 24,
+        }}
+      >
+        <div
+          className="ink-card"
+          style={{
+            background: "var(--paper-warm)",
+            padding: 28,
+            maxWidth: 520,
+            width: "100%",
+            maxHeight: "80vh",
+            overflowY: "auto",
+          }}
+        >
+          <div className="tag" style={{ marginBottom: 6 }}>
+            schedule
+          </div>
+          <h2
+            className="serif-display"
+            style={{
+              fontSize: 28,
+              margin: "0 0 6px",
+              fontWeight: 500,
+            }}
+          >
+            {overflowState.tasks.length} task
+            {overflowState.tasks.length === 1 ? "" : "s"} couldn&apos;t fit
+          </h2>
+          <p
+            className="hand"
+            style={{
+              fontSize: 14,
+              color: "var(--ink-soft)",
+              margin: "0 0 16px",
+            }}
+          >
+            your time windows + daily limit don&apos;t leave room for these
+            before the deadline. you can overbook those days, or leave them
+            unscheduled in to-do.
+          </p>
+          <ul
+            style={{
+              listStyle: "none",
+              padding: 0,
+              margin: "0 0 20px",
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              maxHeight: 220,
+              overflowY: "auto",
+            }}
+          >
+            {overflowState.tasks.map((t) => (
+              <li
+                key={t.id}
+                className="ink-card soft"
+                style={{
+                  padding: "8px 12px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  fontSize: 14,
+                }}
+              >
+                <span style={{ flex: 1 }}>{t.title}</span>
+                {t.priority === "stretch" && (
+                  <span className="chip" style={{ fontSize: 10 }}>
+                    stretch
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <button
+              type="button"
+              className="btn"
+              onClick={continueWithoutOverflow}
+              disabled={overflowBusy}
+            >
+              continue without them
+            </button>
+            <button
+              type="button"
+              className="btn primary"
+              onClick={overbookOverflow}
+              disabled={overflowBusy}
+            >
+              {overflowBusy ? "placing…" : "place anyway"}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }

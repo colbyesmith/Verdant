@@ -4,18 +4,17 @@ import { prisma } from "@/lib/db";
 import { getBusyIntervals } from "@/lib/calendar-read";
 import { ensureUserPreferences } from "@/lib/user";
 import { redirect } from "next/navigation";
-import Link from "next/link";
 import { format, addDays, parseISO, startOfWeek } from "date-fns";
 import type { ScheduledSession, FernNote } from "@/types/plan";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
 import {
-  WeekGrid,
   type VerdantBlock,
   type ExternalBlock,
 } from "@/components/verdant/WeekGrid";
 import { ForestSprite } from "@/components/verdant/art";
 import { displayTitle } from "@/lib/phase";
 import { ScheduleHeader } from "./ScheduleHeader";
+import { ScheduleClient } from "./ScheduleClient";
 
 type SearchParams = Promise<{ w?: string }>;
 
@@ -183,90 +182,8 @@ export default async function SchedulePage({
           weekOffset={weekOffset}
           label={headerLabel}
           calendarConnected={busy.ok}
-          activePlanId={plans[0]?.id ?? null}
+          activePlanIds={plans.map((p) => p.id)}
         />
-
-        {/* legend */}
-        <div
-          className="ink-card soft"
-          style={{
-            padding: "10px 14px",
-            marginBottom: 12,
-            display: "flex",
-            gap: 16,
-            alignItems: "center",
-            flexWrap: "wrap",
-          }}
-        >
-          <span className="tag">legend</span>
-          {[
-            { label: "lesson", bg: "var(--leaf-pale)" },
-            { label: "review", bg: "var(--sky-soft)" },
-            { label: "milestone", bg: "var(--sun-soft)" },
-          ].map((it) => (
-            <span
-              key={it.label}
-              style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13 }}
-            >
-              <span
-                style={{
-                  width: 16,
-                  height: 16,
-                  background: it.bg,
-                  border: "1.25px solid var(--ink)",
-                  borderRadius: 4,
-                }}
-              />{" "}
-              {it.label}
-            </span>
-          ))}
-          <span style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13 }}>
-            <span
-              style={{
-                width: 16,
-                height: 16,
-                background: "#e6d8c0",
-                border: "1.25px solid var(--ink-faded)",
-                borderRadius: 4,
-                opacity: 0.6,
-              }}
-            />{" "}
-            existing event
-          </span>
-          {sproutFilters.length > 0 && (
-            <>
-              <span style={{ marginLeft: 8 }} className="tag">
-                sprouts
-              </span>
-              {sproutFilters.map((f) => (
-                <Link
-                  key={f.id}
-                  href={`/plan/${f.id}`}
-                  className="chip"
-                  style={{
-                    background: f.color,
-                    border: "1.25px solid var(--ink)",
-                    textDecoration: "none",
-                    color: "inherit",
-                  }}
-                >
-                  {f.title}
-                </Link>
-              ))}
-            </>
-          )}
-          <span
-            style={{
-              marginLeft: "auto",
-              fontFamily: "var(--font-fraunces)",
-              fontStyle: "italic",
-              fontSize: 14,
-              color: "var(--ink-faded)",
-            }}
-          >
-            click a session to open · drag to move (locks in place)
-          </span>
-        </div>
 
         {bannerNote && (
           <div
@@ -315,9 +232,7 @@ export default async function SchedulePage({
             no active sprouts. plant one to see your week.
           </div>
         ) : (
-          <WeekGrid
-            dateLabels={dateLabels}
-            todayIndex={todayIdx}
+          <ScheduleClient
             verdant={verdant}
             external={external}
             timeWindows={timeWindows}
@@ -325,6 +240,9 @@ export default async function SchedulePage({
             startDateISO={startDateISO}
             deadlineISO={deadlineISO}
             weekOffset={weekOffset}
+            dateLabels={dateLabels}
+            todayIndex={todayIdx}
+            sproutFilters={sproutFilters.map((f) => ({ id: f.id, title: f.title }))}
           />
         )}
       </div>

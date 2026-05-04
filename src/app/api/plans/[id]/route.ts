@@ -10,6 +10,7 @@ import { interpretEdit } from "@/lib/edit-plan";
 import { applyEditOps } from "@/lib/apply-edit-ops";
 import { packWithScoring } from "@/lib/scoring-pack";
 import { applyTaskFeedback } from "@/lib/task-feedback";
+import { loadCrossPlanBusy } from "@/lib/cross-plan-busy";
 import type { ScheduledSession, SproutPlan } from "@/types/plan";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
 import { NextResponse } from "next/server";
@@ -130,12 +131,15 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         string,
         number
       >;
-      const calRead = await getBusyIntervals({
-        userId: s.user.id,
-        accessToken: s.accessToken,
-        from: now,
-        to: new Date(plan.deadline.getTime() + 864e5),
-      });
+      const [calRead, crossPlan] = await Promise.all([
+        getBusyIntervals({
+          userId: s.user.id,
+          accessToken: s.accessToken,
+          from: now,
+          to: new Date(plan.deadline.getTime() + 864e5),
+        }),
+        loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
+      ]);
       const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
       const result = applyEditOps(llm.ops, {
         plan: sproutPlan,
@@ -144,7 +148,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         startDate: plan.startDate,
         deadline: new Date(plan.deadline.getTime() + 864e5),
         timeWindows: tw,
-        busy: externalBusy,
+        busy: [...externalBusy, ...crossPlan.busy],
         maxMinutesPerDay: pref.maxMinutesDay,
         slotEffectiveness: slotEff,
         now,
@@ -187,12 +191,15 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       const tw = parseTimeWindowsJson(pref.timeWindows);
       const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
       const from = new Date();
-      const calRead = await getBusyIntervals({
-        userId: s.user.id,
-        accessToken: s.accessToken,
-        from,
-        to: new Date(plan.deadline.getTime() + 864e5),
-      });
+      const [calRead, crossPlan] = await Promise.all([
+        getBusyIntervals({
+          userId: s.user.id,
+          accessToken: s.accessToken,
+          from,
+          to: new Date(plan.deadline.getTime() + 864e5),
+        }),
+        loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
+      ]);
       const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
       const blackoutBusy = blackoutsToBusy(p.data.manualBlackouts as ManualBlackout[]);
       const rescheduled = rescheduleUncompleted(
@@ -201,7 +208,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         new Date(plan.deadline.getTime() + 864e5),
         tw,
         pref.maxMinutesDay,
-        [...externalBusy, ...blackoutBusy]
+        [...externalBusy, ...crossPlan.busy, ...blackoutBusy]
       );
       outSchedule = JSON.stringify(rescheduled);
     }
@@ -211,12 +218,15 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     const tw = parseTimeWindowsJson(pref.timeWindows);
     const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
     const from = new Date(p.data.rescheduleFrom);
-    const busyRead = await getBusyIntervals({
-      userId: s.user.id,
-      accessToken: s.accessToken,
-      from,
-      to: new Date(plan.deadline.getTime() + 864e5),
-    });
+    const [busyRead, crossPlan] = await Promise.all([
+      getBusyIntervals({
+        userId: s.user.id,
+        accessToken: s.accessToken,
+        from,
+        to: new Date(plan.deadline.getTime() + 864e5),
+      }),
+      loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
+    ]);
     const externalBusy = busyRead.intervals.filter((b) => !b.isVerdant);
     const blackoutsJson = outManualBlackouts ?? plan.manualBlackouts;
     const blackoutBusy = blackoutsToBusy(parseBlackouts(blackoutsJson || "[]"));
@@ -226,7 +236,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       new Date(plan.deadline.getTime() + 864e5),
       tw,
       pref.maxMinutesDay,
-      [...externalBusy, ...blackoutBusy]
+      [...externalBusy, ...crossPlan.busy, ...blackoutBusy]
     );
     outSchedule = JSON.stringify(rescheduled);
   }
@@ -255,12 +265,15 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       (t) => !placedTaskIds.has(t.id)
     );
 
-    const calRead = await getBusyIntervals({
-      userId: s.user.id,
-      accessToken: s.accessToken,
-      from: now,
-      to: new Date(plan.deadline.getTime() + 864e5),
-    });
+    const [calRead, crossPlan] = await Promise.all([
+      getBusyIntervals({
+        userId: s.user.id,
+        accessToken: s.accessToken,
+        from: now,
+        to: new Date(plan.deadline.getTime() + 864e5),
+      }),
+      loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
+    ]);
     const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
     const lockedAsBusy = lockedFuture.map((sess) => ({
       start: new Date(sess.start),
@@ -274,9 +287,10 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       startDate: now,
       deadline: new Date(plan.deadline.getTime() + 864e5),
       timeWindows: tw,
-      busy: [...externalBusy, ...lockedAsBusy, ...blackoutBusy],
+      busy: [...externalBusy, ...crossPlan.busy, ...lockedAsBusy, ...blackoutBusy],
       maxMinutesPerDay: pref.maxMinutesDay,
       slotEffectiveness: slotEff,
+      initialDailyMinutesUsed: crossPlan.initialDailyMinutesUsed,
     });
     const newSchedule = [...lockedFuture, ...result.schedule].sort(
       (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()

@@ -68,6 +68,11 @@ model UserPreference {
   slotEffectiveness  String  @default("{}")
   /// cancellation counts per day-of-week
   slotCancellations  String  @default("{}")
+  /// dashboard sprout sort mode: "deadline" | "created" | "custom"
+  sproutSortMode     String  @default("deadline")
+  /// custom drag-reorder of sprout tiles. JSON array of plan IDs in order.
+  /// Only consulted when sproutSortMode = "custom"; missing IDs sort to end.
+  sproutCustomOrder  String  @default("[]")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
