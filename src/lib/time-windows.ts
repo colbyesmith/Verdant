@@ -241,51 +241,6 @@ export function buildScheduleFromPlan(
 }
 
 /**
- * Surgical placement: drop one task into the next open slot without disturbing
- * any existing session. Treats every existing session — past, future, locked,
- * unlocked — as a hard busy block. Returns null if no slot fits before deadline.
- *
- * Used by:
- * - new ReviewInstance entries projected after a rating (the FSRS chain extends)
- * - re-opened journal entries that need a new schedule slot
- *
- * The "no displacement" property is what makes the rule "tasks the user has
- * already seen never move on their own" hold.
- */
-export function placeInOpenSlot(
-  task: { id: string; title: string; type: ScheduledSession["type"]; minutes: number },
-  fromDate: Date,
-  deadline: Date,
-  timeWindows: TimeWindows,
-  existingSchedule: ScheduledSession[],
-  externalBusy: BusyInterval[] = []
-): ScheduledSession | null {
-  const sessionAsBusy: BusyInterval[] = existingSchedule.map((sess) => ({
-    start: new Date(sess.start),
-    end: new Date(sess.end),
-    calendarEventId: sess.calendarEventId ?? `verdant-${sess.id}`,
-    isVerdant: true,
-  }));
-  const minutes = Math.max(15, task.minutes);
-  const start = firstSlotFrom(
-    fromDate,
-    minutes,
-    timeWindows,
-    deadline,
-    [...sessionAsBusy, ...externalBusy]
-  );
-  if (!start) return null;
-  return {
-    id: `sess-${task.id}-${start.getTime().toString(36)}`,
-    planTaskId: task.id,
-    title: task.title,
-    type: task.type,
-    start: start.toISOString(),
-    end: new Date(start.getTime() + minutes * 60_000).toISOString(),
-  };
-}
-
-/**
  * Rebalance: keep completed/past as-is, rebuild all future session times from
  * the same task set using current constraints and deadline.
  */

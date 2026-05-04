@@ -6,7 +6,7 @@ import { getBusyIntervals } from "@/lib/calendar-read";
 import { parseBlackouts, blackoutsToBusy } from "@/lib/blackouts";
 import { applyRating, projectReviewChain, type UiRating } from "@/lib/fsrs";
 import { reviewInstanceToTask } from "@/lib/fsrs-to-tasks";
-import { placeInOpenSlot } from "@/lib/time-windows";
+import { packIntoExistingSchedule } from "@/lib/scoring-pack";
 import { smoothUpdate, slotKeyFromIso } from "@/lib/effectiveness";
 import type { ScheduledSession, SproutPlan } from "@/types/plan";
 
@@ -120,6 +120,8 @@ export async function applyTaskFeedback(args: {
     externalBusy: Awaited<ReturnType<typeof getBusyIntervals>>["intervals"];
     blackoutBusy: ReturnType<typeof blackoutsToBusy>;
     deadlinePlus1: Date;
+    maxMinutesPerDay: number;
+    slotEffectiveness: Record<string, number>;
   } | null = null;
   async function placementCtx() {
     if (_ctx) return _ctx;
@@ -133,11 +135,16 @@ export async function applyTaskFeedback(args: {
     });
     const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
     const blackoutBusy = blackoutsToBusy(parseBlackouts(plan.manualBlackouts));
+    const slotEffectiveness = JSON.parse(
+      pref.slotEffectiveness || "{}"
+    ) as Record<string, number>;
     _ctx = {
       timeWindows: tw,
       externalBusy,
       blackoutBusy,
       deadlinePlus1: new Date(plan.deadline.getTime() + 864e5),
+      maxMinutesPerDay: pref.maxMinutesDay,
+      slotEffectiveness,
     };
     return _ctx;
   }
@@ -194,26 +201,21 @@ export async function applyTaskFeedback(args: {
       const reviewTask = reviewInstanceToTask({
         review: ri,
         lessonTitle: lessonTask?.title ?? "lesson",
+        parentLessonId: ls.lessonId,
+        planStartDate: plan.startDate,
       });
       const ctx = await placementCtx();
-      const placed = placeInOpenSlot(
-        {
-          id: ri.id,
-          title: reviewTask.title,
-          type: "review",
-          minutes: reviewTask.minutes,
-        },
-        now,
-        ctx.deadlinePlus1,
-        ctx.timeWindows,
-        outSchedule,
-        [...ctx.externalBusy, ...ctx.blackoutBusy]
-      );
-      if (placed) {
-        outSchedule = [...outSchedule, placed].sort(
-          (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
-        );
-      }
+      const result = packIntoExistingSchedule({
+        newTasks: [reviewTask],
+        existingSchedule: outSchedule,
+        startDate: now,
+        deadline: ctx.deadlinePlus1,
+        timeWindows: ctx.timeWindows,
+        externalBusy: [...ctx.externalBusy, ...ctx.blackoutBusy],
+        maxMinutesPerDay: ctx.maxMinutesPerDay,
+        slotEffectiveness: ctx.slotEffectiveness,
+      });
+      outSchedule = result.schedule;
     } else if (rating != null) {
       // Re-rate an already-completed review.
       await prisma.reviewInstance.update({
@@ -271,24 +273,17 @@ export async function applyTaskFeedback(args: {
     const planTask = (sproutPlan.tasks ?? []).find((t) => t.id === taskId);
     if (planTask) {
       const ctx = await placementCtx();
-      const placed = placeInOpenSlot(
-        {
-          id: planTask.id,
-          title: planTask.title,
-          type: planTask.type,
-          minutes: planTask.minutes,
-        },
-        now,
-        ctx.deadlinePlus1,
-        ctx.timeWindows,
-        outSchedule,
-        [...ctx.externalBusy, ...ctx.blackoutBusy]
-      );
-      if (placed) {
-        outSchedule = [...outSchedule, placed].sort(
-          (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
-        );
-      }
+      const result = packIntoExistingSchedule({
+        newTasks: [planTask],
+        existingSchedule: outSchedule,
+        startDate: now,
+        deadline: ctx.deadlinePlus1,
+        timeWindows: ctx.timeWindows,
+        externalBusy: [...ctx.externalBusy, ...ctx.blackoutBusy],
+        maxMinutesPerDay: ctx.maxMinutesPerDay,
+        slotEffectiveness: ctx.slotEffectiveness,
+      });
+      outSchedule = result.schedule;
     }
   } else if (rating != null) {
     await prisma.taskCompletion.update({
@@ -326,6 +321,8 @@ async function advanceFsrsAndPlaceNewReviews(args: {
     externalBusy: Awaited<ReturnType<typeof getBusyIntervals>>["intervals"];
     blackoutBusy: ReturnType<typeof blackoutsToBusy>;
     deadlinePlus1: Date;
+    maxMinutesPerDay: number;
+    slotEffectiveness: Record<string, number>;
   }>;
 }): Promise<ScheduledSession[]> {
   const { plan, lessonState: ls, rating, now, schedule } = args;
@@ -371,7 +368,7 @@ async function advanceFsrsAndPlaceNewReviews(args: {
 
   // Drop schedule entries that referenced any of the now-deleted ReviewInstances.
   // This is a surgical removal — only entries belonging to the dropped chain.
-  let outSchedule = schedule.flatMap((entry) => {
+  const outSchedule = schedule.flatMap((entry) => {
     const containsId = (id: string) =>
       entry.planTaskId === id ||
       entry.agenda?.some((a) => a.planTaskId === id);
@@ -424,32 +421,32 @@ async function advanceFsrsAndPlaceNewReviews(args: {
   const parent = (sproutPlan.tasks ?? []).find((t) => t.id === ls.lessonId);
   const lessonTitle = parent?.title ?? "lesson";
 
-  // Place each new instance into the next open slot — surgical, no displacement.
+  // Hand the entire batch of new reviews to the scoring packer. It treats
+  // every existing schedule entry as a hard busy block, seeds the daily-cap
+  // counter from existing minutes, and places each review into the highest-
+  // scoring open slot — respecting `maxMinutesPerDay`, slot effectiveness, and
+  // the FSRS due-date proximity preference all at once. Critically, the packer
+  // never touches existing entries, so the "no displacement" rule still holds.
+  // Any review it can't fit before the deadline lands in `overflow` and stays
+  // unscheduled in the DB (user will see it in to-do without a planned time).
   const ctx = await args.ctxLoader();
-  for (const ri of newInstances) {
-    const reviewTask = reviewInstanceToTask({ review: ri, lessonTitle });
-    const placed = placeInOpenSlot(
-      {
-        id: ri.id,
-        title: reviewTask.title,
-        type: "review",
-        minutes: reviewTask.minutes,
-      },
-      now,
-      ctx.deadlinePlus1,
-      ctx.timeWindows,
-      outSchedule,
-      [...ctx.externalBusy, ...ctx.blackoutBusy]
-    );
-    if (placed) {
-      outSchedule = [...outSchedule, placed].sort(
-        (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
-      );
-    }
-    // If placement fails (no open slot), the ReviewInstance still exists in DB
-    // — the user will see it in to-do as "no scheduled time" and can manually
-    // schedule or adjust. Never silently displace another task.
-  }
-
-  return outSchedule;
+  const reviewTasks = newInstances.map((ri) =>
+    reviewInstanceToTask({
+      review: ri,
+      lessonTitle,
+      parentLessonId: ls.lessonId,
+      planStartDate: plan.startDate,
+    })
+  );
+  const packed = packIntoExistingSchedule({
+    newTasks: reviewTasks,
+    existingSchedule: outSchedule,
+    startDate: now,
+    deadline: ctx.deadlinePlus1,
+    timeWindows: ctx.timeWindows,
+    externalBusy: [...ctx.externalBusy, ...ctx.blackoutBusy],
+    maxMinutesPerDay: ctx.maxMinutesPerDay,
+    slotEffectiveness: ctx.slotEffectiveness,
+  });
+  return packed.schedule;
 }

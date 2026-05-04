@@ -32,6 +32,13 @@ export interface ScoringContext {
   maxMinutesPerDay: number;
   /** Slot effectiveness ratings keyed "<dow>-<HH>". */
   slotEffectiveness: Record<string, number>;
+  /**
+   * Per-day minutes already consumed by entries the packer should *not* place
+   * (i.e. existing locked schedule entries treated as busy). Lets the packer
+   * respect `maxMinutesPerDay` against the full picture instead of starting
+   * each call from zero. Keys are `dayKey()` ISO date strings.
+   */
+  initialDailyMinutesUsed?: Map<string, number>;
 }
 
 export interface PackResult {
@@ -305,6 +312,63 @@ function mergeIntoDailyAgendas(
   );
 }
 
+/**
+ * Add `newTasks` to an existing schedule without disturbing any current entry.
+ *
+ * Use case: the FSRS chain extends after a rating, or a journal entry is
+ * re-opened — we need to slot a few new tasks in but the user's existing past +
+ * future entries must stay exactly where they are. The packer treats every
+ * existing entry as a hard busy block, seeds `dailyMinutesUsed` with the
+ * minutes those entries already consume, then runs the standard scoring pack
+ * on the new tasks.
+ *
+ * Returns the merged schedule (existing + newly placed) sorted by start time
+ * plus any overflow that didn't fit before the deadline.
+ */
+export function packIntoExistingSchedule(args: {
+  newTasks: PlanTask[];
+  existingSchedule: ScheduledSession[];
+  startDate: Date;
+  deadline: Date;
+  timeWindows: TimeWindows;
+  externalBusy: BusyInterval[];
+  maxMinutesPerDay: number;
+  slotEffectiveness: Record<string, number>;
+}): { schedule: ScheduledSession[]; overflow: PlanTask[] } {
+  const existingAsBusy: BusyInterval[] = args.existingSchedule.map((sess) => ({
+    start: new Date(sess.start),
+    end: new Date(sess.end),
+    calendarEventId: sess.calendarEventId ?? `verdant-${sess.id}`,
+    isVerdant: true,
+  }));
+
+  // Per-day minutes already consumed by existing entries. Sum each entry's
+  // duration (in minutes) into the bucket for its local-day key.
+  const initialDailyMinutesUsed = new Map<string, number>();
+  for (const sess of args.existingSchedule) {
+    const start = new Date(sess.start);
+    const end = new Date(sess.end);
+    const minutes = Math.max(0, (end.getTime() - start.getTime()) / 60_000);
+    const k = dayKey(start);
+    initialDailyMinutesUsed.set(k, (initialDailyMinutesUsed.get(k) ?? 0) + minutes);
+  }
+
+  const result = packWithScoring(args.newTasks, {
+    startDate: args.startDate,
+    deadline: args.deadline,
+    timeWindows: args.timeWindows,
+    busy: [...existingAsBusy, ...args.externalBusy],
+    maxMinutesPerDay: args.maxMinutesPerDay,
+    slotEffectiveness: args.slotEffectiveness,
+    initialDailyMinutesUsed,
+  });
+
+  const merged = [...args.existingSchedule, ...result.schedule].sort(
+    (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
+  );
+  return { schedule: merged, overflow: result.overflow };
+}
+
 export function packWithScoring(
   tasks: PlanTask[],
   ctx: ScoringContext
@@ -312,7 +376,9 @@ export function packWithScoring(
   const ordered = topologicalOrder(tasks);
   const placedById = new Map<string, PlacementRecord>();
   const placedBusy: BusyInterval[] = [];
-  const dailyMinutesUsed = new Map<string, number>();
+  const dailyMinutesUsed = new Map<string, number>(
+    ctx.initialDailyMinutesUsed ?? []
+  );
   const overflow: PlanTask[] = [];
 
   for (const task of ordered) {
