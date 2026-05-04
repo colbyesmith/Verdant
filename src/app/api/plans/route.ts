@@ -284,6 +284,11 @@ export async function POST(request: Request) {
         }
 
         // Pass 2: re-pack everything (lessons + milestones + reviews-as-tasks).
+        // Each review carries `mustFollowTaskId` pointing at its parent lesson
+        // so the packer enforces "review after lesson" as a hard ordering, and
+        // its `weekIndex`/`dayOffsetInWeek` are derived from the FSRS-projected
+        // `dueAt` so the scoring packer pulls each review toward when it should
+        // actually happen — instead of bunching every review into week 0.
         const reviewTasks: PlanTask[] = reviewRows.map((r) =>
           reviewInstanceToTask({
             review: {
@@ -296,6 +301,8 @@ export async function POST(request: Request) {
               rating: null,
             },
             lessonTitle: lessonTitles.get(r.lessonId) ?? "lesson",
+            parentLessonId: r.lessonId,
+            planStartDate: plan.startDate,
           })
         );
         const allTasks: PlanTask[] = [...sprout.tasks, ...reviewTasks];
