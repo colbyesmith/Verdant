@@ -1,17 +1,20 @@
 /**
- * Deterministic applier for AI-emitted edit ops (design Q7).
+ * Deterministic applier for AI-emitted edits (design Q-edit-llm).
  *
- * Mutates the SproutPlan / schedule / blackouts according to the op union
- * defined in `edit-plan.ts`. After mutating the plan-task fields, the future
- * portion of the schedule is rebuilt through `packWithScoring` so all the
- * hint-aware quality from PR #5 is preserved post-edit.
+ * Two responsibilities:
+ *   1. Apply imperative `ops` (extend_task, insert_task, remove_task,
+ *      set_priority) by mutating the SproutPlan in place.
+ *   2. Translate declarative `rules` (prefer/forbid/pin) into packer-ready
+ *      inputs: forbid → BusyInterval[], pin → mutate the named session and
+ *      treat as busy, prefer → pass through to ScoringContext.placementRules.
  *
- * Hard constraints (deadline, daily cap, lock semantics) are owned by the
- * scoring packer; this module's job is to translate ops into plan/schedule
- * mutations, not to re-implement constraint solving.
+ * Hard constraints (deadline, daily cap, free-window matching) are owned by
+ * the scoring packer; this module's job is to translate AI intent into
+ * packer inputs, not to re-implement constraint solving.
  */
 import { parseISO, startOfDay } from "date-fns";
 import type {
+  PlacementRule,
   PlanTask,
   ScheduledSession,
   SproutPlan,
@@ -19,14 +22,13 @@ import type {
 } from "@/types/plan";
 import type { BusyInterval } from "@/lib/calendar-read";
 import type { EditOp } from "@/lib/edit-plan";
-import { phaseForWeek } from "@/lib/phase";
-import { packWithScoring } from "@/lib/scoring-pack";
-import {
-  parseBlackouts,
-  blackoutsToBusy,
-  type ManualBlackout,
-} from "@/lib/blackouts";
+import { dedupeScheduleById, packWithScoring } from "@/lib/scoring-pack";
+import { parseBlackouts, blackoutsToBusy } from "@/lib/blackouts";
 import { buildId } from "@/lib/ids";
+import {
+  applyPinRules,
+  compileForbidRulesToBusy,
+} from "@/lib/placement-rules";
 
 export interface ApplyContext {
   plan: SproutPlan;
@@ -39,31 +41,47 @@ export interface ApplyContext {
   maxMinutesPerDay: number;
   slotEffectiveness: Record<string, number>;
   now: Date;
+  /**
+   * Persistent placement rules already saved on the plan. Merged with any new
+   * rules emitted by this edit before the packer runs. Persisting new rules
+   * is opt-in (see route handler) — by default new rules are one-shot.
+   */
+  persistentRules?: PlacementRule[];
+  /**
+   * FSRS-projected review tasks (from `loadProjectedReviewTasks`). These are
+   * NOT in `plan.tasks`; without passing them in, every repack silently drops
+   * every unlocked future review. Pass them so reviews ride along.
+   */
+  projectedReviews?: PlanTask[];
 }
+
+type AuditEntry = {
+  kind: EditOp["op"] | "prefer" | "forbid" | "pin";
+  ok: boolean;
+  note?: string;
+};
 
 export interface ApplyResult {
   plan: SproutPlan;
   schedule: ScheduledSession[];
   manualBlackoutsJson: string;
-  /** Per-op short audit log (op kind + outcome). */
-  appliedOps: { op: EditOp["op"]; ok: boolean; note?: string }[];
+  /** Per-edit short audit log. */
+  appliedOps: AuditEntry[];
+  /**
+   * Rules effectively applied to this packer run: persistent ∪ new. The
+   * caller decides what subset to persist back to `LearningPlan.placementRules`
+   * (default: only the persistent set, i.e. new rules are one-shot).
+   */
+  effectiveRules: PlacementRule[];
 }
 
 function clampMinutes(m: number): number {
   return Math.max(15, Math.min(90, Math.round(m)));
 }
 
-function shiftSession(s: ScheduledSession, deltaDays: number): ScheduledSession {
-  const ms = deltaDays * 86_400_000;
-  return {
-    ...s,
-    start: new Date(parseISO(s.start).getTime() + ms).toISOString(),
-    end: new Date(parseISO(s.end).getTime() + ms).toISOString(),
-  };
-}
-
 export function applyEditOps(
   ops: EditOp[],
+  rules: PlacementRule[],
   ctx: ApplyContext
 ): ApplyResult {
   let plan: SproutPlan = {
@@ -72,76 +90,31 @@ export function applyEditOps(
     phases: ctx.plan.phases.map((p) => ({ ...p })),
   };
   let schedule = ctx.schedule.map((s) => ({ ...s }));
-  let manualBlackouts: ManualBlackout[] = parseBlackouts(ctx.manualBlackoutsJson);
-  let needsRepack = false;
-  const appliedOps: ApplyResult["appliedOps"] = [];
+  const manualBlackouts = parseBlackouts(ctx.manualBlackoutsJson);
+  const appliedOps: AuditEntry[] = [];
+  let structuralChanged = false;
 
   for (const op of ops) {
     switch (op.op) {
       case "extend_task": {
         const task = plan.tasks.find((t) => t.id === op.taskId);
         if (!task) {
-          appliedOps.push({ op: op.op, ok: false, note: "task not found" });
+          appliedOps.push({ kind: op.op, ok: false, note: "task not found" });
           break;
         }
         task.minutes = clampMinutes(task.minutes + op.addMinutes);
-        needsRepack = true;
-        appliedOps.push({ op: op.op, ok: true });
-        break;
-      }
-      case "shift_week": {
-        // Adjust schedule directly for already-placed sessions whose underlying
-        // task lives in this week. Future repack will redo unlocked sessions
-        // anyway, but moving them now means locked sessions in this week move
-        // too (intentionally — the user asked to shift the week).
-        const taskIds = new Set(
-          plan.tasks.filter((t) => t.weekIndex === op.weekIndex).map((t) => t.id)
-        );
-        let touched = 0;
-        schedule = schedule.map((s) => {
-          const ids = s.agenda
-            ? s.agenda.map((a) => a.planTaskId)
-            : [s.planTaskId];
-          if (ids.some((id) => taskIds.has(id))) {
-            touched++;
-            return shiftSession(s, op.deltaDays);
-          }
-          return s;
-        });
-        appliedOps.push({ op: op.op, ok: true, note: `${touched} sessions` });
-        break;
-      }
-      case "shift_phase": {
-        const phaseCount = plan.phases.length;
-        if (op.phaseIndex < 0 || op.phaseIndex >= phaseCount) {
-          appliedOps.push({ op: op.op, ok: false, note: "phase out of range" });
-          break;
-        }
-        const taskIds = new Set(
-          plan.tasks
-            .filter(
-              (t) => phaseForWeek(t.weekIndex, phaseCount) === op.phaseIndex
-            )
-            .map((t) => t.id)
-        );
-        let touched = 0;
-        schedule = schedule.map((s) => {
-          const ids = s.agenda
-            ? s.agenda.map((a) => a.planTaskId)
-            : [s.planTaskId];
-          if (ids.some((id) => taskIds.has(id))) {
-            touched++;
-            return shiftSession(s, op.deltaDays);
-          }
-          return s;
-        });
-        appliedOps.push({ op: op.op, ok: true, note: `${touched} sessions` });
+        structuralChanged = true;
+        appliedOps.push({ kind: op.op, ok: true });
         break;
       }
       case "insert_task": {
         const after = plan.tasks.find((t) => t.id === op.afterTaskId);
         if (!after) {
-          appliedOps.push({ op: op.op, ok: false, note: "afterTaskId not found" });
+          appliedOps.push({
+            kind: op.op,
+            ok: false,
+            note: "afterTaskId not found",
+          });
           break;
         }
         const newTask: PlanTask = {
@@ -161,18 +134,17 @@ export function applyEditOps(
           newTask,
           ...plan.tasks.slice(idx + 1),
         ];
-        needsRepack = true;
-        appliedOps.push({ op: op.op, ok: true });
+        structuralChanged = true;
+        appliedOps.push({ kind: op.op, ok: true });
         break;
       }
       case "remove_task": {
         const before = plan.tasks.length;
         plan.tasks = plan.tasks.filter((t) => t.id !== op.taskId);
         if (plan.tasks.length === before) {
-          appliedOps.push({ op: op.op, ok: false, note: "task not found" });
+          appliedOps.push({ kind: op.op, ok: false, note: "task not found" });
           break;
         }
-        // Drop sessions that referenced the removed task.
         schedule = schedule.flatMap((s) => {
           if (s.agenda) {
             const remainingAgenda = s.agenda.filter(
@@ -184,41 +156,59 @@ export function applyEditOps(
           }
           return s.planTaskId === op.taskId ? [] : [s];
         });
-        needsRepack = true;
-        appliedOps.push({ op: op.op, ok: true });
+        structuralChanged = true;
+        appliedOps.push({ kind: op.op, ok: true });
         break;
       }
       case "set_priority": {
         const task = plan.tasks.find((t) => t.id === op.taskId);
         if (!task) {
-          appliedOps.push({ op: op.op, ok: false, note: "task not found" });
+          appliedOps.push({ kind: op.op, ok: false, note: "task not found" });
           break;
         }
         task.priority = op.priority;
-        appliedOps.push({ op: op.op, ok: true });
-        break;
-      }
-      case "lock_session": {
-        const idx = schedule.findIndex((s) => s.id === op.sessionId);
-        if (idx === -1) {
-          appliedOps.push({ op: op.op, ok: false, note: "session not found" });
-          break;
-        }
-        schedule[idx] = { ...schedule[idx], locked: op.locked };
-        appliedOps.push({ op: op.op, ok: true });
-        break;
-      }
-      case "add_blackout": {
-        manualBlackouts = [
-          ...manualBlackouts,
-          { from: op.from, to: op.to, reason: op.reason },
-        ];
-        needsRepack = true;
-        appliedOps.push({ op: op.op, ok: true });
+        appliedOps.push({ kind: op.op, ok: true });
         break;
       }
     }
   }
+
+  const persistentRules = ctx.persistentRules ?? [];
+  const effectiveRules: PlacementRule[] = [...persistentRules, ...rules];
+
+  // Pin rules mutate the schedule directly. We do this before the repack so
+  // pinned sessions are visible as locked-busy to the packer.
+  const pinResult = applyPinRules(rules, schedule);
+  schedule = pinResult.schedule;
+  for (const rule of rules) {
+    if (rule.kind === "pin") {
+      const found = pinResult.pinned.some(
+        (p) => p.calendarEventId === `pin-${rule.sessionId}`
+      );
+      appliedOps.push({
+        kind: "pin",
+        ok: found,
+        note: found ? undefined : "session not found",
+      });
+    } else if (rule.kind === "forbid") {
+      const hasWindow =
+        (rule.window.dayOfWeek && rule.window.dayOfWeek.length > 0) ||
+        !!rule.window.date ||
+        !!rule.window.dateRange;
+      appliedOps.push({
+        kind: "forbid",
+        ok: hasWindow,
+        note: hasWindow ? undefined : "empty window — ignored",
+      });
+    } else if (rule.kind === "prefer") {
+      appliedOps.push({ kind: "prefer", ok: true });
+    }
+  }
+
+  // Always repack the future portion: any rule (prefer/forbid) might shift
+  // unlocked sessions, and structural ops always need a reflow.
+  const needsRepack =
+    structuralChanged || rules.length > 0 || pinResult.pinned.length > 0;
 
   if (needsRepack) {
     const fromDate = ctx.now;
@@ -231,7 +221,13 @@ export function applyEditOps(
       if (s.agenda) for (const a of s.agenda) placedTaskIds.add(a.planTaskId);
       else placedTaskIds.add(s.planTaskId);
     }
-    const tasksToRepack = plan.tasks.filter((t) => !placedTaskIds.has(t.id));
+    // Repack covers BOTH plan tasks (lessons + milestones from planJson) and
+    // FSRS-projected reviews. Reviews aren't in plan.tasks; if we leave them
+    // out, every repack drops every unlocked future review.
+    const tasksToRepack = [
+      ...plan.tasks.filter((t) => !placedTaskIds.has(t.id)),
+      ...(ctx.projectedReviews ?? []).filter((t) => !placedTaskIds.has(t.id)),
+    ];
 
     const lockedAsBusy: BusyInterval[] = lockedFuture.map((s) => ({
       start: parseISO(s.start),
@@ -240,6 +236,10 @@ export function applyEditOps(
       isVerdant: true,
     }));
     const blackoutBusy = blackoutsToBusy(manualBlackouts);
+    const forbidBusy = compileForbidRulesToBusy(effectiveRules, {
+      startDate: ctx.startDate,
+      deadline: ctx.deadline,
+    });
     const repackStart =
       startOfDay(fromDate) > ctx.startDate ? startOfDay(fromDate) : ctx.startDate;
 
@@ -247,29 +247,32 @@ export function applyEditOps(
       startDate: repackStart,
       deadline: ctx.deadline,
       timeWindows: ctx.timeWindows,
-      busy: [...ctx.busy, ...lockedAsBusy, ...blackoutBusy],
+      busy: [...ctx.busy, ...lockedAsBusy, ...blackoutBusy, ...forbidBusy],
       maxMinutesPerDay: ctx.maxMinutesPerDay,
       slotEffectiveness: ctx.slotEffectiveness,
+      placementRules: effectiveRules,
+      phaseCount: plan.phases.length,
     });
 
-    schedule = [...past, ...lockedFuture, ...result.schedule].sort(
-      (a, b) => parseISO(a.start).getTime() - parseISO(b.start).getTime()
+    schedule = dedupeScheduleById(
+      [...past, ...lockedFuture, ...result.schedule].sort(
+        (a, b) => parseISO(a.start).getTime() - parseISO(b.start).getTime()
+      )
     );
     if (result.overflow.length > 0) {
       appliedOps.push({
-        op: "extend_task",
+        kind: "extend_task",
         ok: false,
         note: `${result.overflow.length} task(s) couldn't fit before the deadline after this edit`,
       });
     }
   }
 
-  // Re-sort schedule by start time after any non-repack mutations.
-  schedule = schedule.sort(
-    (a, b) => parseISO(a.start).getTime() - parseISO(b.start).getTime()
+  schedule = dedupeScheduleById(
+    schedule.sort(
+      (a, b) => parseISO(a.start).getTime() - parseISO(b.start).getTime()
+    )
   );
-
-  // Persist the (possibly modified) plan task ordering & blackouts.
   plan = { ...plan, sessionsPlanned: plan.tasks.length };
 
   return {
@@ -277,6 +280,6 @@ export function applyEditOps(
     schedule,
     manualBlackoutsJson: JSON.stringify(manualBlackouts),
     appliedOps,
+    effectiveRules,
   };
 }
-

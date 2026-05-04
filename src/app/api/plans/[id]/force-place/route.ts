@@ -4,6 +4,10 @@ import { ensureUserPreferences } from "@/lib/user";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
 import { getBusyIntervals } from "@/lib/calendar-read";
 import { parseBlackouts, blackoutsToBusy } from "@/lib/blackouts";
+import {
+  compileForbidRulesToBusy,
+  parsePlacementRules,
+} from "@/lib/placement-rules";
 import { packIntoExistingSchedule } from "@/lib/scoring-pack";
 import { loadCrossPlanBusy } from "@/lib/cross-plan-busy";
 import type { ScheduledSession, SproutPlan, PlanTask } from "@/types/plan";
@@ -77,21 +81,33 @@ export async function POST(request: Request, { params }: RouteParams) {
   ) as Record<string, number>;
   const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
   const blackoutBusy = blackoutsToBusy(parseBlackouts(plan.manualBlackouts));
+  const persistentRules = parsePlacementRules(plan.placementRules);
+  const forbidBusy = compileForbidRulesToBusy(persistentRules, {
+    startDate: now,
+    deadline: new Date(plan.deadline.getTime() + 864e5),
+  });
 
   // The whole point of this endpoint: lift the daily cap for this placement
   // only. Number.MAX_SAFE_INTEGER is effectively "no cap" — clampDur in the
   // packer will min(task.minutes, this) → task.minutes wins. Other constraints
-  // (windows, busy, deadline) are unchanged.
+  // (windows, busy, deadline, persistent placement rules) are unchanged.
   const result = packIntoExistingSchedule({
     newTasks: tasks as PlanTask[],
     existingSchedule,
     startDate: now,
     deadline: new Date(plan.deadline.getTime() + 864e5),
     timeWindows: tw,
-    externalBusy: [...externalBusy, ...crossPlan.busy, ...blackoutBusy],
+    externalBusy: [
+      ...externalBusy,
+      ...crossPlan.busy,
+      ...blackoutBusy,
+      ...forbidBusy,
+    ],
     maxMinutesPerDay: Number.MAX_SAFE_INTEGER,
     slotEffectiveness,
     extraDailyMinutesUsed: crossPlan.initialDailyMinutesUsed,
+    placementRules: persistentRules,
+    phaseCount: (sproutPlan.phases ?? []).length,
   });
 
   await prisma.learningPlan.update({

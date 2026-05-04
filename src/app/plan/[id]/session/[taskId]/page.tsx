@@ -13,6 +13,7 @@ import {
 import { LeafSprig, Sprout } from "@/components/verdant/art";
 import { displayTitle, phaseForWeek, youtubeId } from "@/lib/phase";
 import { SessionControls } from "./SessionControls";
+import { OneTimeHint } from "@/components/verdant/OneTimeHint";
 
 function pickVideoFor(
   task: PlanTask,
@@ -343,6 +344,14 @@ export default async function SessionDetailPage({
             <div style={{ position: "sticky", top: 16, alignSelf: "start" }}>
               <YouTubeBlock videoId={video.id} caption={video.caption} />
               <div style={{ marginTop: 14 }}>
+                <OneTimeHint
+                  storageKey="verdant.tooltip.session.dismissed"
+                  emoji="🌱"
+                >
+                  When you finish a session, pick a rating first — then{" "}
+                  <strong>mark done</strong> to commit it. Your rating teaches
+                  Fern when you do your best work.
+                </OneTimeHint>
                 <SessionControls
                   planId={id}
                   taskId={taskId}

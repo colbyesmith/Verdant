@@ -20,9 +20,15 @@
  *   - `preferStandalone` bonus when the day is empty.
  */
 import { addDays, getDay, startOfDay } from "date-fns";
-import type { PlanTask, ScheduledSession, TimeWindows } from "@/types/plan";
+import type {
+  PlacementRule,
+  PlanTask,
+  ScheduledSession,
+  TimeWindows,
+} from "@/types/plan";
 import type { BusyInterval } from "@/lib/calendar-read";
 import { freeIntervalsForDay } from "@/lib/free-intervals";
+import { preferRuleScore } from "@/lib/placement-rules";
 
 export interface ScoringContext {
   startDate: Date;
@@ -39,6 +45,19 @@ export interface ScoringContext {
    * each call from zero. Keys are `dayKey()` ISO date strings.
    */
   initialDailyMinutesUsed?: Map<string, number>;
+  /**
+   * Declarative placement rules consulted by `ruleScore`. Hard `forbid` rules
+   * should already be compiled into `busy` by the caller (see
+   * `compileForbidRulesToBusy`). Soft `prefer` rules are read from here at
+   * scoring time. Pass an empty array (or omit) to skip.
+   */
+  placementRules?: PlacementRule[];
+  /**
+   * Total phase count for the plan, used by `phaseIndex` filters in rules. If
+   * omitted, phaseIndex filters are skipped (treated as no-op). The packer
+   * doesn't otherwise need this.
+   */
+  phaseCount?: number;
 }
 
 export interface PackResult {
@@ -218,6 +237,11 @@ function standaloneScore(
   return used === 0 ? 4 : -6; // strongly prefer empty days; penalize sharing
 }
 
+function ruleScore(task: PlanTask, slot: Candidate, ctx: ScoringContext): number {
+  if (!ctx.placementRules || ctx.placementRules.length === 0) return 0;
+  return preferRuleScore(task, slot, ctx.placementRules, ctx.phaseCount ?? 1);
+}
+
 function scoreCandidate(
   task: PlanTask,
   slot: Candidate,
@@ -230,7 +254,8 @@ function scoreCandidate(
     idealDayScore(task, slot) +
     effectivenessScore(slot, ctx) +
     standaloneScore(task, slot, dailyMinutesUsed) +
-    dueAtProximityScore(task, slot)
+    dueAtProximityScore(task, slot) +
+    ruleScore(task, slot, ctx)
   );
 }
 
@@ -325,6 +350,26 @@ function mergeIntoDailyAgendas(
  * Returns the merged schedule (existing + newly placed) sorted by start time
  * plus any overflow that didn't fit before the deadline.
  */
+/**
+ * Defensive dedup: keep the FIRST occurrence of each session id, drop subsequent
+ * ones. The packer's normal output is unique-by-id, but any code path that
+ * concatenates `[past, lockedFuture, ...newlyPacked]` is one mistake away from
+ * collisions, and React keys break loudly on dupes. Cheaper to scrub at the
+ * boundary than to track every merge site.
+ */
+export function dedupeScheduleById(
+  sessions: ScheduledSession[]
+): ScheduledSession[] {
+  const seen = new Set<string>();
+  const out: ScheduledSession[] = [];
+  for (const s of sessions) {
+    if (seen.has(s.id)) continue;
+    seen.add(s.id);
+    out.push(s);
+  }
+  return out;
+}
+
 export function packIntoExistingSchedule(args: {
   newTasks: PlanTask[];
   existingSchedule: ScheduledSession[];
@@ -341,6 +386,10 @@ export function packIntoExistingSchedule(args: {
    * so the daily cap reflects the user's full cross-plan picture.
    */
   extraDailyMinutesUsed?: Map<string, number>;
+  /** Forwarded to packWithScoring's ScoringContext. */
+  placementRules?: PlacementRule[];
+  /** Forwarded to packWithScoring's ScoringContext. */
+  phaseCount?: number;
 }): { schedule: ScheduledSession[]; overflow: PlanTask[] } {
   const existingAsBusy: BusyInterval[] = args.existingSchedule.map((sess) => ({
     start: new Date(sess.start),
@@ -370,6 +419,8 @@ export function packIntoExistingSchedule(args: {
     maxMinutesPerDay: args.maxMinutesPerDay,
     slotEffectiveness: args.slotEffectiveness,
     initialDailyMinutesUsed,
+    placementRules: args.placementRules,
+    phaseCount: args.phaseCount,
   });
 
   const merged = [...args.existingSchedule, ...result.schedule].sort(

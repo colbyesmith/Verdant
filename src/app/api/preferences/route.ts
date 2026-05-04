@@ -22,6 +22,9 @@ const patch = z.object({
   sproutSortMode: z.enum(["deadline", "created", "custom"]).optional(),
   /** Custom-mode reorder. Plan IDs in display order; missing IDs sort to end. */
   sproutCustomOrder: z.array(z.string()).optional(),
+  /** Onboarding completion stamp. The modal sends `true` to record "now"; we
+   *  never accept a client-supplied date. Once set, never re-prompts. */
+  onboardedNow: z.boolean().optional(),
 });
 
 export async function GET() {
@@ -71,6 +74,9 @@ export async function PATCH(request: Request) {
   }
   if (p.data.sproutCustomOrder !== undefined) {
     data.sproutCustomOrder = JSON.stringify(p.data.sproutCustomOrder);
+  }
+  if (p.data.onboardedNow === true) {
+    data.onboardedAt = new Date().toISOString();
   }
   const pref = await prisma.userPreference.upsert({
     where: { userId: s.user.id },

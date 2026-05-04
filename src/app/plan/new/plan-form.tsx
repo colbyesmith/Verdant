@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Sprout } from "@/components/verdant/art";
+import { OnboardingModal } from "@/components/verdant/OnboardingModal";
 import { differenceInCalendarWeeks } from "date-fns";
 
 // Whimsical ticker words — gerund-form so they read naturally as
@@ -84,8 +85,21 @@ interface ErrorEvent {
 
 type StreamEvent = ProgressEvent | DoneEvent | ErrorEvent;
 
-export function NewPlanForm() {
+interface NewPlanFormProps {
+  showOnboarding: boolean;
+  initialTimeWindowsJson: string;
+  initialMaxMinutesDay: number;
+  initialPushToCalendar: boolean;
+}
+
+export function NewPlanForm({
+  showOnboarding,
+  initialTimeWindowsJson,
+  initialMaxMinutesDay,
+  initialPushToCalendar,
+}: NewPlanFormProps) {
   const r = useRouter();
+  const [onboardingOpen, setOnboardingOpen] = useState(showOnboarding);
   const [skill, setSkill] = useState("");
   const [deadline, setDeadline] = useState("");
   const [resources, setResources] = useState<string[]>([""]);
@@ -242,6 +256,14 @@ export function NewPlanForm() {
 
   return (
     <>
+    {onboardingOpen && (
+      <OnboardingModal
+        initialTimeWindowsJson={initialTimeWindowsJson}
+        initialMaxMinutesDay={initialMaxMinutesDay}
+        initialPushToCalendar={initialPushToCalendar}
+        onDismiss={() => setOnboardingOpen(false)}
+      />
+    )}
     <div style={{ padding: "20px 36px 60px", display: "grid", placeItems: "start center" }}>
       <div className="journal-edge" style={{ width: "min(1100px, 100%)", padding: "40px 48px" }}>
         <form onSubmit={onSubmit}>

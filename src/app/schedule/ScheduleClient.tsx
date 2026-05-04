@@ -8,6 +8,7 @@ import {
 } from "@/components/verdant/WeekGrid";
 import type { TimeWindows } from "@/types/plan";
 import { colorForSprout } from "@/lib/sprout-color";
+import { OneTimeHint } from "@/components/verdant/OneTimeHint";
 
 export interface SproutFilterOption {
   id: string;
@@ -65,6 +66,15 @@ export function ScheduleClient({
 
   return (
     <>
+      <OneTimeHint
+        storageKey="verdant.tooltip.schedule.dismissed"
+        emoji="📆"
+      >
+        <strong>Drag</strong> any session to move it — locked sessions stay put
+        on reschedules. <strong>Click</strong> a sprout chip to filter. Past
+        sessions are immutable.
+      </OneTimeHint>
+
       {/* legend */}
       <div
         className="ink-card soft"

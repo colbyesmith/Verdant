@@ -7,6 +7,7 @@ import { redirect } from "next/navigation";
 import { format, addDays, parseISO, startOfWeek } from "date-fns";
 import type { ScheduledSession, FernNote } from "@/types/plan";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
+import { dedupeScheduleById } from "@/lib/scoring-pack";
 import {
   type VerdantBlock,
   type ExternalBlock,
@@ -86,7 +87,9 @@ export default async function SchedulePage({
   // Verdant sessions across all active plans, filtered to this week.
   const verdant: VerdantBlock[] = [];
   for (const plan of plans) {
-    const sessions = JSON.parse(plan.scheduleJson || "[]") as ScheduledSession[];
+    const sessions = dedupeScheduleById(
+      JSON.parse(plan.scheduleJson || "[]") as ScheduledSession[]
+    );
     for (const sess of sessions) {
       const start = parseISO(sess.start);
       const end = parseISO(sess.end);
