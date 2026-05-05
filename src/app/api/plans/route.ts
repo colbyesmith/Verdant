@@ -11,6 +11,11 @@ import { seedFsrsForPlan } from "@/lib/fsrs";
 import { reviewInstanceToTask } from "@/lib/fsrs-to-tasks";
 import type { PlanTask, ScheduledSession, SproutPlan } from "@/types/plan";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
+import {
+  applyYoutubeVideoLengthsToLessonMinutes,
+  enrichSproutWithYoutubePlaylist,
+  findYoutubePlaylistIdInResources,
+} from "@/lib/youtube-playlist";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -68,6 +73,19 @@ export async function POST(request: Request) {
     : new Date();
   if (Number.isNaN(deadline.getTime()) || deadline <= startDate) {
     return NextResponse.json({ error: "Invalid deadline" }, { status: 400 });
+  }
+
+  if (
+    findYoutubePlaylistIdInResources(parsed.data.initialResources) &&
+    !process.env.YOUTUBE_API_KEY?.trim()
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          "YouTube playlist URLs require YOUTUBE_API_KEY in .env (enable YouTube Data API v3 for your Google Cloud project).",
+      },
+      { status: 400 }
+    );
   }
 
   const userId = s.user.id;
@@ -132,7 +150,7 @@ export async function POST(request: Request) {
           label: "drafting growth phases",
         });
         const tLLM = Date.now();
-        const sprout: SproutPlan = await generateSproutPlan({
+        let sprout: SproutPlan = await generateSproutPlan({
           targetSkill,
           deadline,
           startDate,
@@ -141,6 +159,16 @@ export async function POST(request: Request) {
           weeklyMinutesTarget: pref.weeklyMinutesTarget,
           freeformNote: freeformNote ?? null,
         });
+        if (findYoutubePlaylistIdInResources(initialResources)) {
+          sprout = await enrichSproutWithYoutubePlaylist(sprout, initialResources);
+        }
+        const ytKey = process.env.YOUTUBE_API_KEY?.trim();
+        if (ytKey) {
+          sprout = {
+            ...sprout,
+            tasks: await applyYoutubeVideoLengthsToLessonMinutes(sprout.tasks, ytKey),
+          };
+        }
         tick("generateSproutPlan", tLLM);
 
         // Step 3: pack tasks into the calendar. Two passes: first packs the

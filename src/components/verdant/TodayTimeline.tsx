@@ -12,6 +12,8 @@ export type TimelineEvent = {
   end: string;
   /** When set, the verdant tile becomes a link to the session detail page. */
   href?: string;
+  /** Owning sprout plan — used with calendar conflict resolution on the dashboard. */
+  planId?: string;
 };
 
 const START_H = 7;
@@ -30,17 +32,51 @@ function colorFor(e: TimelineEvent) {
   return "rgba(139,111,74,0.18)";
 }
 
+function midnightMinutes(t: string): number {
+  const [h, m] = t.split(":").map(Number);
+  return h * 60 + m;
+}
+
+function intervalsOverlapHHMM(
+  aStart: string,
+  aEnd: string,
+  bStart: string,
+  bEnd: string
+): boolean {
+  const as = midnightMinutes(aStart);
+  const ae = midnightMinutes(aEnd);
+  const bs = midnightMinutes(bStart);
+  const be = midnightMinutes(bEnd);
+  return ae > bs && as < be;
+}
+
+function verdantOverlapsCalendar(e: TimelineEvent, extEvents: TimelineEvent[]): boolean {
+  for (const x of extEvents) {
+    if (intervalsOverlapHHMM(e.start, e.end, x.start, x.end)) return true;
+  }
+  return false;
+}
+
 export function TodayTimeline({
   events,
   nowMinutes,
   upNext,
   summaryHint,
+  calendarConnected = true,
+  onConflictSession,
 }: {
   events: TimelineEvent[];
   /** minutes past midnight for the "now" line; clamp inside lane if outside range */
   nowMinutes: number;
   upNext?: TimelineEvent;
   summaryHint?: string;
+  /**
+   * When false, an empty Calendar lane shows the connect prompt. When true,
+   * empty means no external meetings in the plotted window (or none today).
+   */
+  calendarConnected?: boolean;
+  /** When set, clicking a conflicting verdant tile opens conflict UI instead of navigating. */
+  onConflictSession?: (e: TimelineEvent) => void;
 }) {
   const verdantEvents = events.filter((e) => e.type !== "ext");
   const extEvents = events.filter((e) => e.type === "ext");
@@ -164,21 +200,26 @@ export function TodayTimeline({
           {verdantEvents.map((e) => {
             const left = (toMin(e.start) / TOTAL_MIN) * 100;
             const width = ((toMin(e.end) - toMin(e.start)) / TOTAL_MIN) * 100;
+            const conflictsCal = verdantOverlapsCalendar(e, extEvents);
             const tileStyle = {
               position: "absolute" as const,
               left: `${left}%`,
               width: `max(110px, ${width}%)`,
               top: 4,
               bottom: 4,
-              background: colorFor(e),
-              border: "1.5px solid var(--ink)",
+              background: conflictsCal ? "rgba(194, 90, 90, 0.28)" : colorFor(e),
+              border: conflictsCal
+                ? "2px solid var(--berry)"
+                : "1.5px solid var(--ink)",
               borderRadius: 8,
               padding: "3px 8px",
               overflow: "hidden" as const,
-              boxShadow: "1.5px 2px 0 var(--ink)",
+              boxShadow: conflictsCal
+                ? "1.5px 2px 0 var(--berry)"
+                : "1.5px 2px 0 var(--ink)",
               textDecoration: "none" as const,
               color: "inherit" as const,
-              cursor: e.href ? "pointer" : "default" as const,
+              cursor: e.href ? "pointer" : ("default" as const),
               display: "block" as const,
             };
             const inner = (
@@ -205,12 +246,35 @@ export function TodayTimeline({
                 </div>
               </>
             );
+            const tip = conflictsCal ? "Overlaps a Google Calendar event" : undefined;
+            if (
+              conflictsCal &&
+              e.planId &&
+              onConflictSession
+            ) {
+              return (
+                <button
+                  key={e.id}
+                  type="button"
+                  title={tip}
+                  onClick={() => onConflictSession(e)}
+                  style={{
+                    ...tileStyle,
+                    cursor: "pointer",
+                    font: "inherit",
+                    textAlign: "left",
+                  }}
+                >
+                  {inner}
+                </button>
+              );
+            }
             return e.href ? (
-              <Link key={e.id} href={e.href} style={tileStyle}>
+              <Link key={e.id} href={e.href} style={tileStyle} title={tip}>
                 {inner}
               </Link>
             ) : (
-              <div key={e.id} style={tileStyle}>
+              <div key={e.id} style={tileStyle} title={tip}>
                 {inner}
               </div>
             );
@@ -278,9 +342,13 @@ export function TodayTimeline({
                 fontStyle: "italic",
                 fontSize: 12,
                 color: "var(--ink-faded)",
+                textAlign: "center",
+                padding: "0 8px",
               }}
             >
-              connect Google Calendar to weave around your meetings
+              {calendarConnected
+                ? "no other meetings on your calendar in this window today"
+                : "connect Google Calendar to weave around your meetings"}
             </div>
           ) : (
             extEvents.map((e) => {

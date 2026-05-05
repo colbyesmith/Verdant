@@ -1,5 +1,9 @@
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
+import {
+  getTaskJournalDelegate,
+  taskJournalUnavailable,
+} from "@/lib/task-journal";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -31,7 +35,15 @@ export async function GET(_: Request, { params }: RouteParams) {
   if (!ok.ok) {
     return NextResponse.json({ error: ok.error }, { status: ok.status });
   }
-  const entry = await prisma.taskJournal.findUnique({
+  const tj = getTaskJournalDelegate() as {
+    findUnique: (args: {
+      where: { planId_taskId: { planId: string; taskId: string } };
+    }) => Promise<{ body: string; updatedAt: Date } | null>;
+  } | null;
+  if (!tj) {
+    return NextResponse.json({ body: "", updatedAt: null });
+  }
+  const entry = await tj.findUnique({
     where: { planId_taskId: { planId: id, taskId } },
   });
   return NextResponse.json({
@@ -55,7 +67,15 @@ export async function PUT(request: Request, { params }: RouteParams) {
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.message }, { status: 400 });
   }
-  const entry = await prisma.taskJournal.upsert({
+  const tj = getTaskJournalDelegate() as {
+    upsert: (args: {
+      where: { planId_taskId: { planId: string; taskId: string } };
+      create: { planId: string; taskId: string; body: string };
+      update: { body: string };
+    }) => Promise<{ body: string; updatedAt: Date }>;
+  } | null;
+  if (!tj) return taskJournalUnavailable();
+  const entry = await tj.upsert({
     where: { planId_taskId: { planId: id, taskId } },
     create: { planId: id, taskId, body: parsed.data.body },
     update: { body: parsed.data.body },
