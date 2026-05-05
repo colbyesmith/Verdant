@@ -195,6 +195,16 @@ model TaskJournal {
   planId    String
   taskId    String
   body      String   @default("")
+  /// Persisted Fern chat history — JSON array of `{role: "user"|"fern", content: string}`.
+  /// Bounded to the last 3 turns (≤ 6 messages) by the chat API on each write.
+  /// Goal is continuity on re-open, not a learning record — the journal `body` above
+  /// is the persistent record.
+  chatJson  String   @default("[]")
+  /// Persisted "Ask Fern to expand" cards — JSON array of `{id, presetId, content, createdAt}`.
+  /// Bounded to the last 3 cards by the deepen API on each write. Mirrors `chatJson`
+  /// semantics: continuity across reloads, not infinite history. Users can dismiss
+  /// individual cards (DELETE …?cardId=…) or clear all (DELETE).
+  deepenJson String  @default("[]")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
