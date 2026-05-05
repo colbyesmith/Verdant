@@ -9,6 +9,7 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 import type { TaskType, TimeWindows } from "@/types/plan";
+import { ConflictResolveModal } from "@/components/verdant/ConflictResolveModal";
 
 const HOUR_PX = 36;
 const FIRST_HOUR = 5;
@@ -115,6 +116,20 @@ function clampMin(v: number): number {
   return Math.max(FIRST_HOUR * 60, Math.min(LAST_HOUR * 60, v));
 }
 
+/** True when a Verdant block's time range overlaps any external (Google) block on the same day. */
+function overlapsExternalCalendar(
+  startMin: number,
+  endMin: number,
+  dayExternal: ExternalBlock[]
+): boolean {
+  for (const x of dayExternal) {
+    if (endMin <= x.startMin) continue;
+    if (startMin >= x.endMin) continue;
+    return true;
+  }
+  return false;
+}
+
 function snap15(min: number): number {
   return Math.round(min / SNAP_MIN) * SNAP_MIN;
 }
@@ -162,6 +177,11 @@ export function WeekGrid({
   const [drag, setDrag] = useState<DragState | null>(null);
   const [hover, setHover] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [conflictModal, setConflictModal] = useState<{
+    planId: string;
+    sessionId: string;
+    title: string;
+  } | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const dragStateRef = useRef<DragState | null>(null);
   const wasDraggingRef = useRef<Set<string>>(new Set());
@@ -465,6 +485,16 @@ export function WeekGrid({
       wasDraggingRef.current.delete(block.id);
       return;
     }
+    const dayEx = external.filter((x) => x.dayIndex === block.dayIndex);
+    if (overlapsExternalCalendar(block.startMin, block.endMin, dayEx)) {
+      e.preventDefault();
+      setConflictModal({
+        planId: block.planId,
+        sessionId: block.id,
+        title: block.title,
+      });
+      return;
+    }
     router.push(block.href);
   }
 
@@ -689,6 +719,11 @@ export function WeekGrid({
                 const isSaving =
                   drag?.block.id === e.id && drag?.saving === true;
                 const showLock = e.locked;
+                const conflictsCalendar = overlapsExternalCalendar(
+                  e.startMin,
+                  e.endMin,
+                  dayExternal
+                );
                 const cursor = e.pastImmovable
                   ? "pointer"
                   : drag?.block.id === e.id
@@ -699,6 +734,11 @@ export function WeekGrid({
                     key={id}
                     role="button"
                     tabIndex={0}
+                    title={
+                      conflictsCalendar
+                        ? "Overlaps a Google Calendar event"
+                        : undefined
+                    }
                     onMouseEnter={() => setHover(id)}
                     onMouseLeave={() => setHover(null)}
                     onPointerDown={(ev) => onBlockPointerDown(ev, e)}
@@ -715,12 +755,20 @@ export function WeekGrid({
                       left: 3,
                       right: 3,
                       height: Math.max(20, h - 2),
-                      background: colorFor(e.type),
-                      border: "1.5px solid var(--ink)",
+                      background: conflictsCalendar
+                        ? "rgba(194, 90, 90, 0.28)"
+                        : colorFor(e.type),
+                      border: conflictsCalendar
+                        ? "2px solid var(--berry)"
+                        : "1.5px solid var(--ink)",
                       borderRadius: 8,
                       boxShadow: isHover
-                        ? "3px 3px 0 var(--ink)"
-                        : "1.5px 2px 0 var(--ink)",
+                        ? conflictsCalendar
+                          ? "3px 3px 0 var(--berry)"
+                          : "3px 3px 0 var(--ink)"
+                        : conflictsCalendar
+                          ? "1.5px 2px 0 var(--berry)"
+                          : "1.5px 2px 0 var(--ink)",
                       padding: "4px 6px",
                       overflow: "hidden",
                       cursor,
@@ -819,6 +867,14 @@ export function WeekGrid({
           );
         })}
       </div>
+
+      <ConflictResolveModal
+        open={conflictModal !== null}
+        onClose={() => setConflictModal(null)}
+        planId={conflictModal?.planId ?? ""}
+        sessionId={conflictModal?.sessionId ?? ""}
+        sessionTitle={conflictModal?.title ?? ""}
+      />
 
       {/* chevron drop zones (visible only during drag) */}
       <ChevronZone

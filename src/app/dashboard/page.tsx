@@ -5,12 +5,19 @@ import { ensureUserPreferences } from "@/lib/user";
 import type { SproutPlan, ScheduledSession } from "@/types/plan";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { format, parseISO, differenceInCalendarDays, isSameDay } from "date-fns";
-import { Sprout, CalendarIcon } from "@/components/verdant/art";
 import {
-  TodayTimeline,
-  type TimelineEvent,
-} from "@/components/verdant/TodayTimeline";
+  format,
+  parseISO,
+  differenceInCalendarDays,
+  isSameDay,
+  startOfDay,
+  addDays,
+} from "date-fns";
+import { getBusyIntervals } from "@/lib/calendar-read";
+import { Sprout, CalendarIcon } from "@/components/verdant/art";
+import type { TimelineEvent } from "@/components/verdant/TodayTimeline";
+import { DashboardTimelinePanel } from "@/components/verdant/DashboardTimelinePanel";
+import { CalendarRefreshButton } from "@/components/verdant/CalendarRefreshButton";
 import { displayTitle } from "@/lib/phase";
 import {
   SproutGrid,
@@ -29,17 +36,62 @@ function classifyType(t: string): TimelineEvent["type"] {
   return "verdant-lesson";
 }
 
+/** Matches `TodayTimeline` hour rail (7–22). */
+const TIMELINE_START_MIN = 7 * 60;
+const TIMELINE_END_MIN = 22 * 60;
+
+/** Clip [start,end) to today's calendar day in local time. */
+function clipToToday(
+  start: Date,
+  end: Date,
+  today: Date
+): { start: Date; end: Date } | null {
+  const day0 = startOfDay(today);
+  const day1 = addDays(day0, 1);
+  const lo = start < day0 ? day0 : start;
+  const hi = end > day1 ? day1 : end;
+  if (hi <= lo) return null;
+  return { start: lo, end: hi };
+}
+
+/** Clip to the visible timeline band; supports intervals that cross local midnight. */
+function clipToTimelineBand(start: Date, end: Date): { start: Date; end: Date } | null {
+  const day0 = startOfDay(start);
+  const startMinFromMidnight = (start.getTime() - day0.getTime()) / 60_000;
+  const durationMin = (end.getTime() - start.getTime()) / 60_000;
+  if (durationMin <= 0) return null;
+  let sm = startMinFromMidnight;
+  let em = startMinFromMidnight + durationMin;
+  sm = Math.max(sm, TIMELINE_START_MIN);
+  em = Math.min(em, TIMELINE_END_MIN);
+  if (em <= sm) return null;
+  return {
+    start: new Date(day0.getTime() + sm * 60_000),
+    end: new Date(day0.getTime() + em * 60_000),
+  };
+}
+
 export default async function DashboardPage() {
   const s = await auth();
   if (!s?.user?.id) {
     redirect("/login");
   }
-  const [plans, pref] = await Promise.all([
+  const now = new Date();
+  const todayStart = startOfDay(now);
+  const todayEnd = addDays(todayStart, 1);
+
+  const [plans, pref, busyToday] = await Promise.all([
     prisma.learningPlan.findMany({
       where: { userId: s.user.id, status: "active" },
       orderBy: { createdAt: "desc" },
     }),
     ensureUserPreferences(s.user.id),
+    getBusyIntervals({
+      userId: s.user.id,
+      accessToken: s.accessToken,
+      from: todayStart,
+      to: todayEnd,
+    }),
   ]);
   const pushToCalendar = pref.pushToCalendar;
 
@@ -125,7 +177,6 @@ export default async function DashboardPage() {
     doneByPlan.set(c.planId, set);
   }
 
-  const now = new Date();
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
 
   // Build per-sprout grid items + collect today's events + weekly minutes,
@@ -189,6 +240,7 @@ export default async function DashboardPage() {
           start: timeOfDay(row.start),
           end: timeOfDay(row.end),
           href: taskId ? `/plan/${plan.id}/session/${taskId}` : undefined,
+          planId: plan.id,
         });
       }
       if (end >= now) upcomingCount++;
@@ -203,6 +255,22 @@ export default async function DashboardPage() {
         perPlanDayMins.set(plan.id, arr);
       }
     }
+  }
+
+  // External Google Calendar meetings (same source as the schedule week grid).
+  for (const iv of busyToday.intervals) {
+    if (iv.isVerdant) continue;
+    const todayClip = clipToToday(iv.start, iv.end, now);
+    if (!todayClip) continue;
+    const band = clipToTimelineBand(todayClip.start, todayClip.end);
+    if (!band) continue;
+    events.push({
+      id: `gcal-${iv.calendarEventId}`,
+      title: "Calendar event",
+      type: "ext",
+      start: format(band.start, "HH:mm"),
+      end: format(band.end, "HH:mm"),
+    });
   }
 
   // Sort today's events chronologically across all sprouts.
@@ -269,7 +337,24 @@ export default async function DashboardPage() {
           </div>
         </div>
 
-        <TodayTimeline events={events} nowMinutes={nowMinutes} upNext={upNext} />
+        {busyToday.ok && (
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "flex-end",
+              marginBottom: 8,
+              alignItems: "center",
+            }}
+          >
+            <CalendarRefreshButton calendarConnected />
+          </div>
+        )}
+        <DashboardTimelinePanel
+          events={events}
+          nowMinutes={nowMinutes}
+          upNext={upNext}
+          calendarConnected={busyToday.ok}
+        />
 
         <div
           style={{

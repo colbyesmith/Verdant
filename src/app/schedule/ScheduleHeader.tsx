@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { CalendarRefreshButton } from "@/components/verdant/CalendarRefreshButton";
 
 interface Props {
   weekOffset: number;
@@ -126,6 +127,7 @@ export function ScheduleHeader({
             today
           </Link>
         )}
+        <CalendarRefreshButton calendarConnected={calendarConnected} />
         {activePlanIds.length > 0 && (
           <button
             type="button"

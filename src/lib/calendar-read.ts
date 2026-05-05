@@ -194,6 +194,14 @@ export async function getBusyIntervals(
   return { ok: true, intervals };
 }
 
+/** Drop cached Google reads for one user (e.g. after “refresh calendar”). */
+export function invalidateBusyIntervalsCacheForUser(userId: string): void {
+  const prefix = `${userId}|`;
+  for (const key of cache.keys()) {
+    if (key.startsWith(prefix)) cache.delete(key);
+  }
+}
+
 /** Test/dev helper — clears the in-memory cache. */
 export function _clearBusyIntervalsCache(): void {
   cache.clear();
