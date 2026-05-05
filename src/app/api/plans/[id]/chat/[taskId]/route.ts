@@ -12,6 +12,10 @@ import {
   resolveSuccessCriteria,
 } from "@/lib/session-content";
 import {
+  getTaskJournalDelegate,
+  taskJournalUnavailable,
+} from "@/lib/task-journal";
+import {
   FERN_TUTOR_MODEL,
   FERN_TUTOR_SYSTEM,
   FERN_TUTOR_TEMPERATURE,
@@ -137,7 +141,16 @@ export async function GET(_: Request, { params }: RouteParams) {
   if (!plan) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
-  const entry = await prisma.taskJournal.findUnique({
+  const tj = getTaskJournalDelegate() as {
+    findUnique: (args: {
+      where: { planId_taskId: { planId: string; taskId: string } };
+      select: { chatJson: true };
+    }) => Promise<{ chatJson: string } | null>;
+  } | null;
+  if (!tj) {
+    return NextResponse.json({ turns: [] });
+  }
+  const entry = await tj.findUnique({
     where: { planId_taskId: { planId: id, taskId } },
     select: { chatJson: true },
   });
@@ -157,7 +170,15 @@ export async function DELETE(_: Request, { params }: RouteParams) {
   if (!plan) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
-  await prisma.taskJournal.upsert({
+  const tj = getTaskJournalDelegate() as {
+    upsert: (args: {
+      where: { planId_taskId: { planId: string; taskId: string } };
+      create: { planId: string; taskId: string; chatJson: string };
+      update: { chatJson: string };
+    }) => Promise<unknown>;
+  } | null;
+  if (!tj) return taskJournalUnavailable();
+  await tj.upsert({
     where: { planId_taskId: { planId: id, taskId } },
     create: { planId: id, taskId, chatJson: "[]" },
     update: { chatJson: "[]" },
@@ -204,8 +225,20 @@ export async function POST(request: Request, { params }: RouteParams) {
     );
   }
 
+  const tj = getTaskJournalDelegate() as {
+    findUnique: (args: {
+      where: { planId_taskId: { planId: string; taskId: string } };
+    }) => Promise<{ chatJson: string } | null>;
+    upsert: (args: {
+      where: { planId_taskId: { planId: string; taskId: string } };
+      create: { planId: string; taskId: string; chatJson: string };
+      update: { chatJson: string };
+    }) => Promise<unknown>;
+  } | null;
+  if (!tj) return taskJournalUnavailable();
+
   // Load existing turns and append the new user message before sending.
-  const journal = await prisma.taskJournal.findUnique({
+  const journal = await tj.findUnique({
     where: { planId_taskId: { planId: id, taskId } },
   });
   const priorTurns = parseTurnsSafe(journal?.chatJson ?? "[]");
@@ -274,7 +307,7 @@ export async function POST(request: Request, { params }: RouteParams) {
   const fernTurn: ChatTurn = { role: "fern", content: reply };
   const trimmed = trimTurns([...conversation, fernTurn]);
 
-  await prisma.taskJournal.upsert({
+  await tj.upsert({
     where: { planId_taskId: { planId: id, taskId } },
     create: { planId: id, taskId, chatJson: JSON.stringify(trimmed) },
     update: { chatJson: JSON.stringify(trimmed) },

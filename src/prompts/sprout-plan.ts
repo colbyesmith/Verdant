@@ -26,7 +26,8 @@ Use these principles:
 - **Pace to the user's actual time budget.** The user prompt includes a per-week minutes summary; respect anomaly notes (e.g. "mostly blocked Mon/Tue") by placing lighter weeks where reality is constrained. Leave headroom — the spaced-repetition scheduler will add review sessions automatically.
 - **Time-of-day hints.** Default \`preferredTimeOfDay\` to the user's strongest histogram bucket. Mornings for milestones when possible.
 - **Priority.** Every task must have \`priority\`: "core" tasks are essential to the goal; "stretch" tasks are extras that may be dropped if the schedule overflows. Mark stretch sparingly.
-- **Use the resources.** If the user provided links, weave them into the early lesson tasks via the resourceRef field.
+- **Use the resources.** If the user provided links, weave them into lesson tasks via the resourceRef field when it is a single video or article.
+- **YouTube playlists.** If the user pasted a playlist URL (\`...playlist?list=...\` or \`watch?v=...\&list=...\`), Verdant assigns each **lesson** session the next video in playlist order after generation — you do not need to duplicate video URLs on every lesson; focus titles and pedagogy on what to do in that sitting. When \`YOUTUBE_API_KEY\` is set, **lesson** durations are overwritten from each video’s runtime (+ 5 minutes buffer) — your \`minutes\` values for lessons with YouTube links are only a fallback.
 - **No fluff.** Every task should advance the goal. No "introduction to learning" filler.
 - **Concrete pedagogy per task.** Every task ships with three pedagogical fields the learner reads on the session page:
   - \`objective\`: the single concrete thing this session is for. For lessons → a deliverable (notes, a worked example, a clip). For milestones → a target the learner must demonstrate end-to-end. One sentence.

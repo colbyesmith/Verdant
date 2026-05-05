@@ -350,7 +350,7 @@ export function NewPlanForm({
                           c[i] = e.target.value;
                           setResources(c);
                         }}
-                        placeholder="paste a video, course, book…"
+                        placeholder="YouTube playlist, single video, course, book…"
                         style={{ flex: 1 }}
                       />
                       <button
@@ -375,7 +375,11 @@ export function NewPlanForm({
                     + add another
                   </button>
                   <span className="hint">
-                    we&apos;ll suggest more once we see your phases
+                    paste a YouTube playlist URL to assign each lesson the next
+                    video in order (requires{" "}
+                    <span className="mono">YOUTUBE_API_KEY</span> in{" "}
+                    <span className="mono">.env</span>). we&apos;ll suggest more
+                    resources once we see your phases.
                   </span>
                 </div>
                 <div className="field">

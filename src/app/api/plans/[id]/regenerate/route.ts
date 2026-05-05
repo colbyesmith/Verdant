@@ -13,6 +13,11 @@ import {
 import { loadProjectedReviewTasks } from "@/lib/load-projected-reviews";
 import type { ScheduledSession, SproutPlan } from "@/types/plan";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
+import {
+  applyYoutubeVideoLengthsToLessonMinutes,
+  enrichSproutWithYoutubePlaylist,
+  findYoutubePlaylistIdInResources,
+} from "@/lib/youtube-playlist";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -39,6 +44,20 @@ export async function POST(request: Request, { params }: RouteParams) {
   });
   if (!plan) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  const initialResourcesList = JSON.parse(plan.initialResources || "[]") as string[];
+  if (
+    findYoutubePlaylistIdInResources(initialResourcesList) &&
+    !process.env.YOUTUBE_API_KEY?.trim()
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          "YouTube playlist URLs require YOUTUBE_API_KEY in .env (enable YouTube Data API v3).",
+      },
+      { status: 400 }
+    );
   }
 
   const parsed = body.safeParse(await request.json().catch(() => ({})));
@@ -89,15 +108,25 @@ export async function POST(request: Request, { params }: RouteParams) {
       busy: externalBusy,
       slotEffectiveness,
     });
-    const sprout = await generatePlanWithAI({
+    let sprout = await generatePlanWithAI({
       targetSkill: plan.targetSkill,
       deadline: plan.deadline,
       startDate: plan.startDate,
-      initialResources: JSON.parse(plan.initialResources || "[]") as string[],
+      initialResources: initialResourcesList,
       availability,
       weeklyMinutesTarget: pref.weeklyMinutesTarget,
       freeformNote: plan.freeformNote,
     });
+    if (findYoutubePlaylistIdInResources(initialResourcesList)) {
+      sprout = await enrichSproutWithYoutubePlaylist(sprout, initialResourcesList);
+    }
+    const ytKey = process.env.YOUTUBE_API_KEY?.trim();
+    if (ytKey) {
+      sprout = {
+        ...sprout,
+        tasks: await applyYoutubeVideoLengthsToLessonMinutes(sprout.tasks, ytKey),
+      };
+    }
     nextPlanJson = JSON.stringify(sprout);
     nextPrevJson = plan.planJson;
   }

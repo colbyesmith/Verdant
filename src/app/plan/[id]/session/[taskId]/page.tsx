@@ -23,6 +23,7 @@ import {
   resolveSteps,
   resolveSuccessCriteria,
 } from "@/lib/session-content";
+import { findTaskJournalByTask } from "@/lib/task-journal";
 
 function pickVideoFor(
   task: PlanTask,
@@ -215,9 +216,7 @@ export default async function SessionDetailPage({
       : prisma.taskCompletion.findUnique({
           where: { planId_taskId: { planId: id, taskId } },
         }),
-    prisma.taskJournal.findUnique({
-      where: { planId_taskId: { planId: id, taskId } },
-    }),
+    findTaskJournalByTask(id, taskId),
   ]);
   const initialDone = isReview
     ? Boolean(reviewState?.completed)

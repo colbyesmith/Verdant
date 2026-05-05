@@ -12,6 +12,10 @@ import {
   resolveSuccessCriteria,
 } from "@/lib/session-content";
 import {
+  getTaskJournalDelegate,
+  taskJournalUnavailable,
+} from "@/lib/task-journal";
+import {
   DEEPEN_PRESETS,
   FERN_TUTOR_MODEL,
   FERN_TUTOR_SYSTEM,
@@ -99,7 +103,16 @@ export async function GET(_: Request, { params }: RouteParams) {
   if (!plan) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
-  const entry = await prisma.taskJournal.findUnique({
+  const tj = getTaskJournalDelegate() as {
+    findUnique: (args: {
+      where: { planId_taskId: { planId: string; taskId: string } };
+      select: { deepenJson: true };
+    }) => Promise<{ deepenJson: string } | null>;
+  } | null;
+  if (!tj) {
+    return NextResponse.json({ cards: [] });
+  }
+  const entry = await tj.findUnique({
     where: { planId_taskId: { planId: id, taskId } },
     select: { deepenJson: true },
   });
@@ -119,23 +132,36 @@ export async function DELETE(request: Request, { params }: RouteParams) {
   if (!plan) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
+  const tj = getTaskJournalDelegate() as {
+    findUnique: (args: {
+      where: { planId_taskId: { planId: string; taskId: string } };
+      select: { deepenJson: true };
+    }) => Promise<{ deepenJson: string } | null>;
+    upsert: (args: {
+      where: { planId_taskId: { planId: string; taskId: string } };
+      create: Record<string, unknown>;
+      update: Record<string, unknown>;
+    }) => Promise<unknown>;
+  } | null;
+  if (!tj) return taskJournalUnavailable();
+
   const url = new URL(request.url);
   const cardId = url.searchParams.get("cardId");
   if (cardId) {
-    const entry = await prisma.taskJournal.findUnique({
+    const entry = await tj.findUnique({
       where: { planId_taskId: { planId: id, taskId } },
       select: { deepenJson: true },
     });
     const existing = parseCardsSafe(entry?.deepenJson ?? "[]");
     const next = existing.filter((c) => c.id !== cardId);
-    await prisma.taskJournal.upsert({
+    await tj.upsert({
       where: { planId_taskId: { planId: id, taskId } },
       create: { planId: id, taskId, deepenJson: JSON.stringify(next) },
       update: { deepenJson: JSON.stringify(next) },
     });
     return NextResponse.json({ cards: next });
   }
-  await prisma.taskJournal.upsert({
+  await tj.upsert({
     where: { planId_taskId: { planId: id, taskId } },
     create: { planId: id, taskId, deepenJson: "[]" },
     update: { deepenJson: "[]" },
@@ -185,6 +211,19 @@ export async function POST(request: Request, { params }: RouteParams) {
       { status: 503 }
     );
   }
+
+  const tj = getTaskJournalDelegate() as {
+    findUnique: (args: {
+      where: { planId_taskId: { planId: string; taskId: string } };
+      select: { deepenJson: true };
+    }) => Promise<{ deepenJson: string } | null>;
+    upsert: (args: {
+      where: { planId_taskId: { planId: string; taskId: string } };
+      create: Record<string, unknown>;
+      update: Record<string, unknown>;
+    }) => Promise<unknown>;
+  } | null;
+  if (!tj) return taskJournalUnavailable();
 
   const schedulingFragment = buildSchedulingFragment({
     task,
@@ -236,7 +275,7 @@ export async function POST(request: Request, { params }: RouteParams) {
   }
 
   // Persist into the sliding window. Read existing → append → trim oldest.
-  const existing = await prisma.taskJournal.findUnique({
+  const existing = await tj.findUnique({
     where: { planId_taskId: { planId: id, taskId } },
     select: { deepenJson: true },
   });
@@ -248,7 +287,7 @@ export async function POST(request: Request, { params }: RouteParams) {
     createdAt: new Date().toISOString(),
   };
   const trimmed = [...priorCards, newCard].slice(-CARD_LIMIT);
-  await prisma.taskJournal.upsert({
+  await tj.upsert({
     where: { planId_taskId: { planId: id, taskId } },
     create: { planId: id, taskId, deepenJson: JSON.stringify(trimmed) },
     update: { deepenJson: JSON.stringify(trimmed) },
