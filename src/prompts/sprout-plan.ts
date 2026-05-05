@@ -28,6 +28,10 @@ Use these principles:
 - **Priority.** Every task must have \`priority\`: "core" tasks are essential to the goal; "stretch" tasks are extras that may be dropped if the schedule overflows. Mark stretch sparingly.
 - **Use the resources.** If the user provided links, weave them into the early lesson tasks via the resourceRef field.
 - **No fluff.** Every task should advance the goal. No "introduction to learning" filler.
+- **Concrete pedagogy per task.** Every task ships with three pedagogical fields the learner reads on the session page:
+  - \`objective\`: the single concrete thing this session is for. For lessons → a deliverable (notes, a worked example, a clip). For milestones → a target the learner must demonstrate end-to-end. One sentence.
+  - \`steps\`: 3–5 short imperative sentences telling the learner exactly how to spend the time. Tailor to the actual subject — no boilerplate like "warm up" unless physical, no "watch the demo" unless there's a video.
+  - \`successCriteria\`: 2–4 short, concrete phrases the learner can self-check against (not "you understand it", but "you can re-derive the formula without the textbook"). Domain-specific.
 
 Return a single JSON object that exactly matches the schema the user describes — no commentary, no markdown, no code fences.`;
 
@@ -112,7 +116,15 @@ export function buildSproutPlanUserPrompt(input: SproutPlanPromptInput): string 
             weekIndex: `integer in [0, ${input.weeks - 1}]`,
             dayOffsetInWeek: "integer in [0, 6] — 0 = Monday",
             description:
-              "1-3 sentences: what to do in this session, in plain prose. No bullet lists, no markdown.",
+              "1-3 sentences: what this session is about, in plain prose. The 'what'. No bullet lists, no markdown.",
+            objective:
+              "REQUIRED. One sentence. For lessons: the concrete deliverable (e.g. 'a one-page summary of the chain rule with two worked examples'). For milestones: the target to demonstrate end-to-end (e.g. 'derive the gradient of softmax from scratch on paper, no references').",
+            steps: [
+              "REQUIRED. 3-5 short imperative sentences — exactly how the learner spends the time. Tailored to the subject. No filler like 'warm up' unless physical, no 'watch the demo' unless there's a video.",
+            ],
+            successCriteria: [
+              "REQUIRED. 2-4 short, concrete phrases the learner can self-check against. Domain-specific — not 'you understand it', but 'you can re-derive the formula without the textbook'.",
+            ],
             resourceRef:
               "OPTIONAL: a URL or resource name from the list above, if the session uses it.",
             preferredTimeOfDay:

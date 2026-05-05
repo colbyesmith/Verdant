@@ -642,7 +642,7 @@ export default async function PlanPage({
                   journal.map((row, i, arr) => (
                     <Link
                       key={row.key}
-                      href={`/plan/${id}/journal/${row.taskId}`}
+                      href={`/plan/${id}/session/${row.taskId}`}
                       style={{
                         display: "grid",
                         gridTemplateColumns: "60px 1fr auto 14px",

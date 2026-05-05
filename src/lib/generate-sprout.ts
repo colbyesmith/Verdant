@@ -24,6 +24,18 @@ const planSchema = z.object({
         .string()
         .optional()
         .transform((s) => (s ? s.trim() : s)),
+      objective: z
+        .string()
+        .optional()
+        .transform((s) => (s ? s.trim() : s)),
+      steps: z
+        .array(z.string().transform((s) => s.trim()).pipe(z.string().min(1)))
+        .max(8)
+        .optional(),
+      successCriteria: z
+        .array(z.string().transform((s) => s.trim()).pipe(z.string().min(1)))
+        .max(6)
+        .optional(),
       resourceRef: z
         .string()
         .optional()

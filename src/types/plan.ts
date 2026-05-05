@@ -33,6 +33,29 @@ export interface PlanTask {
    * the scoring packer — closer to `dueAt` is much better than farther. ISO string.
    */
   dueAt?: string;
+
+  // --- Pedagogical content fields. Optional — old plans without them fall back to
+  //     domain-agnostic copy in the session detail page. New plans get these from
+  //     the AI generator (see prompts/sprout-plan.ts).
+
+  /**
+   * The single concrete thing this session is for. Rendered with a type-specific
+   * label: "deliverable" for lessons, "goal" for reviews, "target" for milestones.
+   * One sentence, plain prose.
+   */
+  objective?: string;
+
+  /**
+   * Numbered steps for "how to do it". 2–5 short sentences. When absent, the page
+   * falls back to splitting `description`, then to a domain-agnostic template.
+   */
+  steps?: string[];
+
+  /**
+   * Bullets for "what success feels like". 2–4 short phrases — concrete enough that
+   * the learner can self-assess. Domain-specific (the AI writes them per task).
+   */
+  successCriteria?: string[];
 }
 
 export interface SproutPlan {

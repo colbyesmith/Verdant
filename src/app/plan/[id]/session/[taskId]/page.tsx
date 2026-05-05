@@ -14,6 +14,7 @@ import { LeafSprig, Sprout } from "@/components/verdant/art";
 import { displayTitle, phaseForWeek, youtubeId } from "@/lib/phase";
 import { SessionControls } from "./SessionControls";
 import { OneTimeHint } from "@/components/verdant/OneTimeHint";
+import { JournalBox } from "./JournalBox";
 
 function pickVideoFor(
   task: PlanTask,
@@ -35,12 +36,51 @@ function whyCopyFor(type: PlanTask["type"]): string {
     return "Milestones gate phases — the plan won't ramp until you pass. Treat this like a check-in, not a final exam: you're proving the prior weeks have integrated into something you own.";
   }
   if (type === "review") {
-    return "Reviews are how lessons stick. Spaced repetition is doing more for retention than the original lesson did. Don't skip — even a 10-minute pass keeps the prior week alive.";
+    return "Reviews are how lessons stick. Spaced repetition does more for retention than the original lesson did. Don't skip — even a short pass keeps the prior week alive.";
   }
-  return "Lessons add new material. Show up rested, watch the demo at half speed first, and finish with a single clean rep so your nervous system encodes the right pattern.";
+  return "Lessons introduce new material. Show up with focus, engage with the source actively, and end the session with a concrete artifact — that's what makes it stick.";
 }
 
-function howStepsFor(task: PlanTask): string[] {
+function objectiveLabelFor(type: PlanTask["type"]): string {
+  if (type === "milestone") return "your target";
+  if (type === "review") return "your goal";
+  return "your deliverable";
+}
+
+function objectiveTitleFor(type: PlanTask["type"]): string {
+  if (type === "milestone") return "Target — what you must demonstrate";
+  if (type === "review") return "Goal — what you're reinforcing";
+  return "Deliverable — what you'll have at the end";
+}
+
+function objectiveFallback(task: PlanTask, parent?: PlanTask): string {
+  if (task.type === "milestone") {
+    return "Demonstrate the skill end-to-end on your own — without referencing the lessons that taught it. Treat any output as evidence the prior phase landed.";
+  }
+  if (task.type === "review") {
+    if (parent?.objective) {
+      return `Re-engage with the deliverable from "${parent.title}": ${parent.objective}`;
+    }
+    return "Reconstruct the prior lesson in your own words — without peeking — then check yourself against the source. Capture what didn't land the first time.";
+  }
+  return "Produce one concrete artifact you can point to: notes, a worked example, a clip, a diagram — something future-you can come back to.";
+}
+
+function howStepsFor(task: PlanTask, parent?: PlanTask): string[] {
+  // 1) Explicit steps from the AI generator — always preferred.
+  if (task.steps && task.steps.length >= 2) return task.steps;
+
+  // 2) Reviews can borrow steps from the parent lesson, lightly reframed.
+  if (task.type === "review" && parent?.steps && parent.steps.length >= 2) {
+    return [
+      `Re-engage with: "${parent.title}". Don't peek at the source yet.`,
+      "From memory, sketch out the core idea or redo the deliverable in rough form.",
+      "Compare your version to the original — circle the gaps, not the wins.",
+      "Write what surprised you in the journal below.",
+    ];
+  }
+
+  // 3) Description-as-steps: only when there are clearly multiple sentences.
   if (task.description) {
     const split = task.description
       .split(/\n+|\.\s+(?=[A-Z])/g)
@@ -48,27 +88,68 @@ function howStepsFor(task: PlanTask): string[] {
       .filter(Boolean);
     if (split.length >= 2) return split;
   }
+
+  // 4) Domain-agnostic fallback by type.
   if (task.type === "milestone") {
     return [
-      "Warm up fully — borrow from the warmup lesson in this phase.",
-      "Set up your phone / film yourself.",
-      "Run the milestone three times.",
-      "Watch each take and rate yourself against the cues below.",
+      `Carve out ${task.minutes} uninterrupted minutes and gather the materials you need.`,
+      "Run through the target end-to-end on your own, without referencing the lessons.",
+      "Repeat once more, then assess against the success criteria below.",
+      "Capture what felt solid and what didn't in the journal.",
     ];
   }
   if (task.type === "review") {
     return [
-      "Re-watch the original demo at full speed once.",
-      "Re-watch at 0.5× and pause at the moment your form usually breaks.",
-      "Note one thing in your journal — one cue, not three.",
+      "Pull up the prior lesson — but don't open it yet.",
+      "From memory, reconstruct the core idea or redo the deliverable in rough form.",
+      "Check yourself against the source. Note where you drifted.",
+      "Capture one new insight in the journal below.",
     ];
   }
   return [
-    `Set aside ${task.minutes} minutes — short rests, not long ones.`,
-    "Watch the demo at half speed before standing up.",
-    "Run through the drill, focusing on form before reps.",
-    "Finish with one clean rep so your nervous system encodes the right pattern.",
+    `Block out ${task.minutes} minutes with no interruptions and the source ready.`,
+    "Engage actively — read, watch, or work through the source with notes in hand.",
+    "Produce the deliverable, even a rough first pass. Get it on paper or screen.",
+    "Note one thing that was sharper or fuzzier than expected in the journal.",
   ];
+}
+
+function successCriteriaFor(task: PlanTask, parent?: PlanTask): string[] {
+  if (task.successCriteria && task.successCriteria.length > 0) {
+    return task.successCriteria;
+  }
+  if (task.type === "review" && parent?.successCriteria && parent.successCriteria.length > 0) {
+    return parent.successCriteria;
+  }
+  if (task.type === "milestone") {
+    return [
+      "You can do it end-to-end without consulting the prior lessons.",
+      "Your output is consistent — not just one good run.",
+      "You can describe in one sentence what changed since the start of the phase.",
+    ];
+  }
+  if (task.type === "review") {
+    return [
+      "You can recall the core idea without consulting your notes.",
+      "You noticed at least one thing that wasn't sharp the first time.",
+      "You'd be comfortable being asked about this cold next week.",
+    ];
+  }
+  return [
+    "You finished the deliverable, even if it's rough.",
+    "You can summarize the core idea in one sentence.",
+    "You'd be ready to apply this in a real task tomorrow.",
+  ];
+}
+
+function fernReadFor(type: PlanTask["type"]): string {
+  if (type === "milestone") {
+    return "This is a checkpoint, not just a session. Bring full focus — capture evidence (notes, a recording, a screenshot). The next phase opens when you pass.";
+  }
+  if (type === "review") {
+    return "Don't skip this — the spaced repetition is doing more than the original lesson did.";
+  }
+  return "First pass on this material? Engage actively, not passively. End with the deliverable in hand, even if it's rough.";
 }
 
 export default async function SessionDetailPage({
@@ -107,6 +188,7 @@ export default async function SessionDetailPage({
   let isReview = false;
   let reviewState: { rating: number | null; completed: boolean } | null = null;
   let reviewParentLessonId: string | null = null;
+  let parentLesson: PlanTask | undefined;
 
   if (planTask) {
     task = planTask;
@@ -118,8 +200,8 @@ export default async function SessionDetailPage({
     if (!ri || ri.planId !== plan.id) notFound();
     isReview = true;
     reviewParentLessonId = ri.lessonState.lessonId;
-    const parent = tasks.find((t) => t.id === ri.lessonState.lessonId);
-    const parentTitle = parent?.title ?? "earlier lesson";
+    parentLesson = tasks.find((t) => t.id === ri.lessonState.lessonId);
+    const parentTitle = parentLesson?.title ?? "earlier lesson";
     const start = scheduledFor ? new Date(scheduledFor.start) : ri.dueAt;
     const startMs = start.getTime();
     const planStart = new Date(plan.startDate).getTime();
@@ -135,10 +217,10 @@ export default async function SessionDetailPage({
       minutes: 15,
       weekIndex,
       dayOffsetInWeek: dow,
-      description: parent?.description
-        ? `Re-engage with: ${parent.description}`
+      description: parentLesson?.description
+        ? `Re-engage with: ${parentLesson.description}`
         : `Pull up what you learned in "${parentTitle}" and rehearse the core idea.`,
-      resourceRef: parent?.resourceRef,
+      resourceRef: parentLesson?.resourceRef,
       dueAt: ri.dueAt.toISOString(),
       priority: "core",
     };
@@ -180,11 +262,16 @@ export default async function SessionDetailPage({
   const builtOn =
     task.type === "milestone" ? sortedTasks.filter((_, i) => i < taskIndex) : [];
 
-  const completion = isReview
-    ? null
-    : await prisma.taskCompletion.findUnique({
-        where: { planId_taskId: { planId: id, taskId } },
-      });
+  const [completion, journalEntry] = await Promise.all([
+    isReview
+      ? Promise.resolve(null)
+      : prisma.taskCompletion.findUnique({
+          where: { planId_taskId: { planId: id, taskId } },
+        }),
+    prisma.taskJournal.findUnique({
+      where: { planId_taskId: { planId: id, taskId } },
+    }),
+  ]);
   const initialDone = isReview ? Boolean(reviewState?.completed) : Boolean(completion?.completed);
   const initialRating = isReview
     ? reviewState?.rating && reviewState.rating >= 1
@@ -194,19 +281,9 @@ export default async function SessionDetailPage({
       ? completion.rating
       : 0;
 
-  const cueLines = task.type === "milestone"
-    ? [
-        "Form is unmistakable, not perfect.",
-        "You can repeat it cold, two days in a row.",
-        "You can describe what success felt like in one sentence.",
-      ]
-    : task.type === "review"
-      ? ["Slower than the lesson", "One cue, not three", "Notes go in the journal"]
-      : [
-          "No pinch in the wrist / joint loaded by the drill",
-          "Even tempo across reps",
-          "End on a clean rep, not a tired one",
-        ];
+  const cueLines = successCriteriaFor(task, parentLesson);
+  const howSteps = howStepsFor(task, parentLesson);
+  const objectiveBody = task.objective || objectiveFallback(task, parentLesson);
 
   return (
     <Shell>
@@ -380,11 +457,7 @@ export default async function SessionDetailPage({
                     lineHeight: 1.45,
                   }}
                 >
-                  {task.type === "milestone"
-                    ? "This is a checkpoint, not just a session. Bring full energy — film yourself. The next phase opens when you pass."
-                    : task.type === "review"
-                      ? "Don't skip this — the spaced repetition is doing more than the original lesson did."
-                      : "First time on this drill? Watch the demo at half speed before you stand up."}
+                  {fernReadFor(task.type)}
                 </div>
               </div>
             </div>
@@ -405,6 +478,44 @@ export default async function SessionDetailPage({
                   `A ${task.minutes}-minute ${task.type} session in the ${phaseName} phase.`
                 }
               />
+
+              {/* Objective: deliverable / goal / target. The single most concrete
+                  thing this session is for. Type-specific kicker + title. */}
+              <div
+                className="ink-card"
+                style={{
+                  padding: 18,
+                  background:
+                    task.type === "milestone"
+                      ? "var(--sun-soft)"
+                      : task.type === "review"
+                        ? "var(--sky-soft)"
+                        : "var(--leaf-pale)",
+                  position: "relative",
+                }}
+              >
+                <div className="tag" style={{ marginBottom: 6 }}>
+                  {objectiveLabelFor(task.type)}
+                </div>
+                <h3
+                  className="serif-display"
+                  style={{ fontSize: 20, margin: "0 0 8px", fontWeight: 500 }}
+                >
+                  {objectiveTitleFor(task.type)}
+                </h3>
+                <p
+                  style={{
+                    margin: 0,
+                    fontFamily: "var(--font-fraunces)",
+                    fontSize: 15,
+                    lineHeight: 1.55,
+                    color: "var(--ink)",
+                  }}
+                >
+                  {objectiveBody}
+                </p>
+              </div>
+
               <SessionSection
                 kicker="why it matters"
                 title="Why"
@@ -430,7 +541,7 @@ export default async function SessionDetailPage({
                     gap: 8,
                   }}
                 >
-                  {howStepsFor(task).map((step, i) => (
+                  {howSteps.map((step, i) => (
                     <li
                       key={i}
                       className="ink-card soft"
@@ -684,8 +795,9 @@ export default async function SessionDetailPage({
                       lineHeight: 1.4,
                     }}
                   >
-                    Don&apos;t skip the ones you skipped. Re-doing weak prior
-                    sessions is the most reliable way to pass a milestone.
+                    Stuck on the milestone? The most reliable fix is going back
+                    and re-running the weakest sessions above — not pushing
+                    harder on the milestone itself.
                   </div>
                 </div>
               )}
@@ -725,6 +837,17 @@ export default async function SessionDetailPage({
                   </div>
                 </div>
               )}
+
+              {/* Per-task journal — autosaves on blur + 1.5s debounce. Storage in
+                  TaskJournal keyed by (planId, taskId). Works for synthesized
+                  review tasks too (taskId is the ReviewInstance.id). */}
+              <JournalBox
+                planId={id}
+                taskId={taskId}
+                taskType={task.type}
+                initialBody={journalEntry?.body ?? ""}
+                initialUpdatedAt={journalEntry?.updatedAt?.toISOString() ?? null}
+              />
             </div>
           </div>
         </div>
