@@ -123,6 +123,7 @@ model LearningPlan {
   taskCompletions  TaskCompletion[]
   lessonStates     LessonState[]
   reviewInstances  ReviewInstance[]
+  taskJournals     TaskJournal[]
 
   @@index([userId, status])
 }
@@ -185,6 +186,22 @@ model ReviewInstance {
 
   @@index([planId, dueAt])
   @@index([lessonStateId, projected])
+}
+
+/// Per-task journal entry. taskId may reference a PlanTask (lesson/milestone in
+/// planJson) or a ReviewInstance.id. One row per (planId, taskId).
+model TaskJournal {
+  id        String   @id @default(cuid())
+  planId    String
+  taskId    String
+  body      String   @default("")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  plan LearningPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, taskId])
+  @@index([planId])
 }
 
 /// Singleton counter for total sprouts ever created on the landing page.
